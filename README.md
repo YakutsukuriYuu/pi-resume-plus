@@ -4,6 +4,39 @@
 
 - `/r` 或 `/resume-tree` — 打开选择器（默认直接进入 **All 面板**，当前目录的文件夹置顶；Tab 切到 Current Folder 与原生逐行一致）
 
+## 安装
+
+要求：pi（`@earendil-works/pi-coding-agent`），无运行时依赖。本扩展在 **pi 0.85.1** 上开发并逐项对照验证；其他 pi 版本的原生组件可能不同，不保证兼容。
+
+### 方式一：克隆到扩展目录（推荐）
+
+```bash
+# HTTPS（无需 SSH key）
+git clone https://github.com/YakutsukuriYuu/pi-resume-plus.git ~/.pi/agent/extensions/resume-plus
+
+# 或 SSH
+git clone git@github.com:YakutsukuriYuu/pi-resume-plus.git ~/.pi/agent/extensions/resume-plus
+```
+
+目录名必须是 `resume-plus`（自动发现规则：`~/.pi/agent/extensions/*/index.ts`），不需要 `npm install`。
+安装后重启 pi，或在 pi 里执行 `/reload` 热重载；更新用 `git -C ~/.pi/agent/extensions/resume-plus pull`。
+
+### 方式二：交给 pi 管理（git 包）
+
+```bash
+pi install git:github.com/YakutsukuriYuu/pi-resume-plus   # 安装
+pi update --extensions                                   # 更新
+pi remove git:github.com/YakutsukuriYuu/pi-resume-plus   # 卸载
+```
+
+包会克隆到 `~/.pi/agent/git/github.com/YakutsukuriYuu/pi-resume-plus` 并登记进 `~/.pi/agent/settings.json`。
+注意：这种方式下 `config.json` 位于克隆目录内，而 `pi update --extensions` 在重置/校验克隆时可能覆盖它；
+需要自定义配置（Shift+Enter 等）就用方式一。
+
+### 验证安装
+
+在 pi 里输入 `/r`（或 `/resume-tree`）能打开选择器即成功；按 `ctrl+o` 查看启动信息，扩展列表中应包含 `resume-plus`。
+
 ## 与原生 `/resume` 的一致性
 
 选择器组件直接复制自 pi 0.85.1 源码（见 `UPSTREAM.md`），并已用对照测试逐项回归：
@@ -21,7 +54,6 @@
 
 - **默认 All 面板**：打开 `/r` 即进入全部项目视图；Current Folder 作用域保留，Tab 切换，首次切换时才懒加载
 - **当前目录置顶**：`ctx.cwd` 对应的文件夹固定排在分组第一位（按 realpath 规范路径匹配，符号链接别名也能识别）；其余文件夹保持原生全局线程活动顺序
-
 - **目录分组**：会话按 `session.cwd` 折叠为项目根；文件夹顺序由**全局**线程活动决定
   （不会按 mtime 重排搜索结果，不丢原生排序/相关度）
 - **跨目录线程**：父链跨越目录时，外目录祖先显示为 `↗ [目录] 名称` 引用行，

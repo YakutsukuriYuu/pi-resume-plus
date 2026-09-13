@@ -2,6 +2,7 @@
   "name": "resume-plus",
   "private": true,
   "type": "module",
+  "keywords": ["pi-package"],
   "scripts": {
     "test": "node tests/run.mjs",
     "typecheck": "node tests/setup.mjs && tsc -p tsconfig.json",
