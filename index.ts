@@ -54,6 +54,7 @@ export default function (pi: ExtensionAPI) {
             else SessionManager.open(path).appendSessionInfo(next);
           },
           showRenameHint: true,
+          currentCwd: cwd,
           onOpenInNew: shiftEnter.enabled ? (path) => done({ action: "terminal", path }) : undefined,
         },
         currentFile,

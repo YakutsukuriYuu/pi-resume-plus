@@ -54,50 +54,76 @@ try {
   });
   await test('current scope matches native tree metadata, search, sort and named modes',async()=>{
     const a=await make(), b=await make(Native);
+    a.p.handleInput(keys.tab);await tick(); // default is All; Tab into Current
     for(const key of ['',keys.sort,keys.sort,keys.sort,'auth',keys.named,keys.sort,keys.named,'\x15']) {
       if(key) {a.p.handleInput(key);b.p.handleInput(key);}
       const normalized=(l)=>rows(l).map(({session,depth,isLast,ancestorContinues})=>({path:session.path,depth,isLast,ancestorContinues}));
       assert.deepEqual(normalized(a.list),normalized(b.list));
     }
   });
+  await test('default scope is All; current scope lazy-loads on first Tab and caches All',async()=>{
+    let currentCalls=0,allCalls=0;
+    const p=new Picker(async()=>{currentCalls++;return sessions;},async()=>{allCalls++;return sessions;},()=>{},()=>{},()=>{},()=>{},{theme:nativeTheme.theme,keybindings:kb});
+    allPickers.push(p);await tick();
+    assert.equal(p.scope,'all');assert.equal(allCalls,1);assert.equal(currentCalls,0);
+    assert.ok(rows(p.getSessionList()).some(n=>n.kind==='folder'));
+    p.handleInput(keys.tab);await tick();
+    assert.equal(p.scope,'current');assert.equal(currentCalls,1);
+    assert.ok(rows(p.getSessionList()).every(n=>n.kind!=='folder'));
+    p.handleInput(keys.tab);assert.equal(p.scope,'all');assert.equal(allCalls,1);
+  });
+  await test('current cwd folder pinned first; others keep global order; pin survives search',async()=>{
+    for(const [cwd,expected] of [['/C',['/C','/A','/B']],['/B',['/B','/A','/C']],['/none',['/A','/B','/C']]]) {
+      const a=await make(Picker,sessions,{currentCwd:cwd});
+      assert.deepEqual(rows(a.list).filter(n=>n.kind==='folder').map(n=>n.folderPath),expected);
+    }
+    const a=await make(Picker,sessions,{currentCwd:'/C'});a.p.handleInput('auth');
+    assert.equal(rows(a.list)[0].folderPath,'/C');
+    assert.equal(rows(a.list).find(n=>n.kind==='folder'&&n.folderPath==='/C').session.messageCount,1);
+  });
+  await test('pin matches canonical cwd through symlink alias',async()=>{
+    const realDir=join(temp,'realproj'),aliasDir=join(temp,'aliasproj');mkdirSync(realDir);symlinkSync(realDir,aliasDir);
+    const a=await make(Picker,[fixture('pinned',realDir,50),fixture('other2','/B',100)],{currentCwd:aliasDir});
+    assert.deepEqual(rows(a.list).filter(n=>n.kind==='folder').map(n=>n.folderPath),[realDir,'/B']);
+  });
   await test('All folder order uses GLOBAL descendant activity (root mtime is old)',async()=>{
-    const a=await make();a.p.handleInput(keys.tab);await tick();
+    const a=await make();
     assert.deepEqual(rows(a.list).filter(n=>n.kind==='folder').map(n=>n.folderPath),['/A','/B','/C']);
     assert.deepEqual(rows(a.list).filter(n=>n.folderPath==='/A'&&n.kind!=='folder').map(n=>[n.session.id,!!n.reference]),
       [['root',false],['child',false],['grandchild',true],['return',false],['other',false],['unnamed',false]]);
     assert.equal(rows(a.list).find(n=>n.kind==='folder'&&n.folderPath==='/A').session.messageCount,5);
   });
   await test('cross-folder references keep A→B→A ancestor depths and actual paths',async()=>{
-    const a=await make();a.p.handleInput(keys.tab);await tick();
+    const a=await make();
     const r=rows(a.list).filter(n=>n.folderPath==='/B'&&n.kind!=='folder');
     assert.deepEqual(r.map(n=>[n.session.id,n.depth,!!n.reference]),[['root',1,true],['child',2,true],['grandchild',3,false]]);
   });
   await test('All Alt+G has exact native GLOBAL order and tree metadata',async()=>{
-    const a=await make(),b=await make(Native);a.p.handleInput(keys.tab);b.p.handleInput(keys.tab);await tick();a.p.handleInput(keys.group);
+    const a=await make(Picker,sessions,{currentCwd:'/C'}),b=await make(Native);b.p.handleInput(keys.tab);await tick();a.p.handleInput(keys.group);
     assert.deepEqual(rows(a.list),rows(b.list));
   });
   await test('grouped fuzzy results retain native rank within each cwd; no mtime re-sort',async()=>{
-    const a=await make();a.p.handleInput(keys.tab);await tick();a.p.handleInput('auth');
+    const a=await make();a.p.handleInput('auth');
     for(const cwd of ['/A','/B','/C']) assert.deepEqual(rows(a.list).filter(n=>n.kind!=='folder'&&n.folderPath===cwd).map(n=>n.session.path),
       nativeSearch.filterAndSortSessions(sessions,'auth','threaded').filter(s=>s.cwd===cwd).map(s=>s.path));
   });
   await test('directional collapse/expand idempotent, folder Enter never resumes',async()=>{
-    const a=await make();a.p.handleInput(keys.tab);await tick();a.p.handleInput(keys.left);const count=rows(a.list).length;
+    const a=await make();a.p.handleInput(keys.left);const count=rows(a.list).length;
     a.p.handleInput(keys.left);assert.equal(rows(a.list).length,count);a.p.handleInput(keys.right);assert.ok(rows(a.list).length>count);
     const open=rows(a.list).length;a.p.handleInput(keys.right);assert.equal(rows(a.list).length,open);a.p.handleInput(keys.enter);assert.equal(rows(a.list).length,count);assert.deepEqual(a.events,[]);
   });
   await test('Shift arrows navigate project roots; folders protected from rename/delete/new',async()=>{
-    const a=await make();a.p.handleInput(keys.tab);await tick();a.p.handleInput(keys.shiftDown);assert.equal(rows(a.list)[a.list.selectedIndex].folderPath,'/B');
+    const a=await make();a.p.handleInput(keys.shiftDown);assert.equal(rows(a.list)[a.list.selectedIndex].folderPath,'/B');
     a.p.handleInput(keys.shiftUp);assert.equal(a.list.selectedIndex,0);
     for(const k of [keys.rename,keys.del,keys.shiftEnter]) a.p.handleInput(k);
     assert.equal(a.p.mode,'list');assert.equal(a.list.confirmingDeletePath,null);assert.deepEqual(a.events,[]);
   });
   await test('typing searches collapsed folders and query cursor left/right remains native',async()=>{
-    const a=await make();a.p.handleInput(keys.tab);await tick();a.p.handleInput(keys.left);a.p.handleInput('auth');
+    const a=await make();a.p.handleInput(keys.left);a.p.handleInput('auth');
     assert.ok(rows(a.list).some(n=>n.session.id==='root'));a.p.handleInput(keys.left);a.p.handleInput('Z');assert.equal(a.list.searchInput.getValue(),'autZh');
   });
   await test('session-row cursor movement, page navigation and IME focus',async()=>{
-    const a=await make();a.p.focused=true;assert.equal(a.list.searchInput.focused,true);
+    const a=await make();a.p.handleInput(keys.tab);await tick();a.p.focused=true;assert.equal(a.list.searchInput.focused,true);
     a.p.handleInput('abc');a.p.handleInput(keys.left);a.p.handleInput('Z');assert.equal(a.list.searchInput.getValue(),'abZc');
     a.p.handleInput('\x15');a.p.handleInput(keys.pageDown);assert.equal(a.list.selectedIndex,sessions.length-1);a.p.handleInput(keys.pageUp);assert.equal(a.list.selectedIndex,0);
   });
@@ -108,32 +134,32 @@ try {
   await test('disabled ShiftEnter is inert even if rebound to confirm/delete/rename',async()=>{
     for(const action of ['tui.select.confirm','app.session.delete','app.session.rename']) {
       const a=await make(Picker,sessions,{keybindings:new KeybindingsManager({[action]:'shift+enter'})});
-      a.p.handleInput(keys.shiftEnter);assert.equal(a.p.mode,'list');assert.equal(a.list.confirmingDeletePath,null);assert.deepEqual(a.events,[]);
+      a.p.handleInput(keys.down);a.p.handleInput(keys.shiftEnter);assert.equal(a.p.mode,'list');assert.equal(a.list.confirmingDeletePath,null);assert.deepEqual(a.events,[]);
     }
   });
   await test('enabled ShiftEnter returns real path only, never normal-select callback',async()=>{
     const opened=[];const a=await make(Picker,sessions,{onOpenInNew:path=>opened.push(path)});
-    a.p.handleInput(keys.shiftEnter);assert.deepEqual(opened,[a.list.getSelectedSessionPath()]);assert.deepEqual(a.events,[]);
+    a.p.handleInput(keys.down);a.p.handleInput(keys.shiftEnter);assert.deepEqual(opened,[a.list.getSelectedSessionPath()]);assert.deepEqual(a.events,[]);
   });
   await test('delete confirmation absorbs ShiftEnter and other actions, Esc cancels only confirmation',async()=>{
     const a=await make(Picker,sessions,{onOpenInNew:()=>assert.fail('opened while confirming')});
-    a.p.handleInput(keys.del);const target=a.list.confirmingDeletePath;assert.ok(target);
+    a.p.handleInput(keys.down);a.p.handleInput(keys.del);const target=a.list.confirmingDeletePath;assert.ok(target);
     for(const key of [keys.shiftEnter,keys.tab,keys.rename,'x'])a.p.handleInput(key);
     assert.equal(a.list.confirmingDeletePath,target);a.p.handleInput(keys.esc);assert.equal(a.list.confirmingDeletePath,null);assert.deepEqual(a.events,[]);
   });
   await test('symlink canonicalization protects current session and joins parent references',async()=>{
     const real=join(temp,'protected.jsonl'),alias=join(temp,'alias.jsonl');writeFileSync(real,'');symlinkSync(real,alias);
-    const s={...sessions[0],path:alias,parentSessionPath:undefined};const a=await make(Picker,[s],{currentFile:real});a.p.handleInput(keys.del);
+    const s={...sessions[0],path:alias,parentSessionPath:undefined};const a=await make(Picker,[s],{currentFile:real});a.p.handleInput(keys.down);a.p.handleInput(keys.del);
     assert.equal(a.list.confirmingDeletePath,null);assert.match(plain(a.p),/Cannot delete/);assert.equal(paths.canonicalizePath(alias),paths.canonicalizePath(real));
     assert.equal(paths.canonicalizePath('/missing path'),'/missing path');
   });
   await test('rename prefill, blank stays, ShiftEnter ignored, save trims, cancel preserves selector',async()=>{
-    const a=await make();a.p.handleInput(keys.rename);assert.equal(a.p.renameInput.getValue(),'root');a.p.handleInput('\x0b');assert.equal(a.p.renameInput.getValue(),'');a.p.handleInput(keys.enter);await tick();assert.equal(a.p.mode,'rename');
+    const a=await make();a.p.handleInput(keys.down);a.p.handleInput(keys.rename);assert.equal(a.p.renameInput.getValue(),'root');a.p.handleInput('\x0b');assert.equal(a.p.renameInput.getValue(),'');a.p.handleInput(keys.enter);await tick();assert.equal(a.p.mode,'rename');
     a.p.handleInput(keys.shiftEnter);assert.deepEqual(a.events,[]);a.p.handleInput(' new name ');a.p.handleInput(keys.enter);await tick();await tick();
     assert.deepEqual(a.events,[['rename',join(temp,'root.jsonl'),'new name']]);assert.equal(a.p.mode,'list');a.p.handleInput(keys.rename);a.p.handleInput(keys.esc);assert.equal(a.p.mode,'list');
   });
   await test('rename failure is visible, no unhandled rejection',async()=>{
-    const a=await make(Picker,sessions,{renameSession:async()=>{throw Error('write denied');}});a.p.handleInput(keys.rename);a.p.handleInput(keys.enter);await tick();
+    const a=await make(Picker,sessions,{renameSession:async()=>{throw Error('write denied');}});a.p.handleInput(keys.down);a.p.handleInput(keys.rename);a.p.handleInput(keys.enter);await tick();
     assert.equal(a.p.mode,'list');assert.match(plain(a.p),/Failed to rename: write denied/);
   });
   await test('injected remapped keys work and header reports actual mapping',async()=>{
@@ -142,7 +168,7 @@ try {
     assert.match(plain(a.p),/(option|alt)\+r rename/);
   });
   await test('all shortcut hints wrap at 24/40/80/120 cols and host theme emits color',async()=>{
-    const a=await make(Picker,sessions,{onOpenInNew:()=>{}});a.p.handleInput(keys.tab);await tick();
+    const a=await make(Picker,sessions,{onOpenInNew:()=>{}});
     for(const width of [24,40,80,120]) {
       const lines=a.p.render(width);assert.ok(lines.every(line=>tui.visibleWidth(line)<=width));
       const content=plain(a.p,width).replace(/\s/g,'');for(const hint of ['shift+enter','shift+up/shift+down','regex','rename','delete'])assert.ok(content.includes(hint),hint+' at '+width);
@@ -151,9 +177,9 @@ try {
     const disabled=await make();assert.ok(!plain(disabled.p).includes('shift+enter'));
   });
   await test('loading progress, error and disposal do not mutate closed UI',async()=>{
-    let complete,progress;let renders=0;const p=new Picker((cb)=>{progress=cb;return new Promise(r=>complete=r);},async()=>[],()=>{},()=>{},()=>{},()=>renders++,{theme:nativeTheme.theme,keybindings:kb});
+    let complete,progress;let renders=0;const p=new Picker(async()=>[],(cb)=>{progress=cb;return new Promise(r=>complete=r);},()=>{},()=>{},()=>{},()=>renders++,{theme:nativeTheme.theme,keybindings:kb});
     progress(1,3);assert.match(plain(p),/1\/3/);p.dispose();const before=renders;progress(2,3);complete(sessions);await tick();assert.equal(renders,before);
-    const q=new Picker(async()=>{throw Error('read denied');},async()=>[],()=>{},()=>{},()=>{},()=>{},{theme:nativeTheme.theme,keybindings:kb});allPickers.push(q);await tick();assert.match(plain(q),/Failed to load sessions: read denied/);
+    const q=new Picker(async()=>[],async()=>{throw Error('read denied');},()=>{},()=>{},()=>{},()=>{},{theme:nativeTheme.theme,keybindings:kb});allPickers.push(q);await tick();assert.match(plain(q),/Failed to load sessions: read denied/);
   });
   await test('config defaults/deep defaults/false validation/malformed file fail closed',()=>{
     assert.equal(config.parseConfig({}).shiftEnter.mode,'same');assert.equal(config.parseConfig({shiftEnter:{enabled:false}}).shiftEnter.enabled,false);
@@ -204,7 +230,7 @@ try {
   // Deletion always touches fixtures only; force trash failure using a private executable.
   await test('delete falls back to unlink, refreshes, protects confirm semantics',async()=>{
     const bin=join(temp,'bin');mkdirSync(bin);writeFileSync(join(bin,'trash'),'#!/bin/sh\nexit 1\n',{mode:0o755});const old=process.env.PATH;process.env.PATH=bin;
-    try {const path=join(temp,'delete-only-fixture.jsonl');writeFileSync(path,'fixture');const a=await make(Picker,[{...sessions[0],path,parentSessionPath:undefined}]);a.p.handleInput(keys.del);assert.ok(existsSync(path));a.p.handleInput(keys.enter);await new Promise(r=>setTimeout(r,30));assert.ok(!existsSync(path));assert.match(plain(a.p),/Session deleted/);}finally{process.env.PATH=old;}
+    try {const path=join(temp,'delete-only-fixture.jsonl');writeFileSync(path,'fixture');const a=await make(Picker,[{...sessions[0],path,parentSessionPath:undefined}]);a.p.handleInput(keys.down);a.p.handleInput(keys.del);assert.ok(existsSync(path));a.p.handleInput(keys.enter);await new Promise(r=>setTimeout(r,30));assert.ok(!existsSync(path));assert.match(plain(a.p),/Session deleted/);}finally{process.env.PATH=old;}
   });
   console.log(`\n${passed} tests passed. Only temporary fixtures used. Native reference: pi ${pi.VERSION}.`);
 } finally {

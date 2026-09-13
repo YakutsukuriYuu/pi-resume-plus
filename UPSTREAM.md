@@ -26,3 +26,7 @@ Deviations required by the public extension API (pi does not expose these intern
 5. **Current-session rename**: upstream appends via a separate `SessionManager`; the extension
    uses public `pi.setSessionName()` for the live file (updates state + emits
    `session_info_changed`) and the native separate-manager path for other files.
+6. **Default scope and pinning** (resume-plus enhancements, not upstream behavior): the selector
+   opens in the All scope (upstream opens Current Folder; All loads immediately and Current
+   lazy-loads on first Tab instead), and the grouped view pins the current cwd folder first
+   using canonical path comparison. The Alt+G native-order view has no pinning.

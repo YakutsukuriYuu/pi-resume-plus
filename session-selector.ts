@@ -314,6 +314,7 @@ class SessionList implements Component, Focusable {
 	private showPath = false;
 	private confirmingDeletePath: string | null = null;
 	private currentSessionCanonicalPath?: string;
+	private currentFolderCanonical?: string;
 	public onSelect?: (sessionPath: string) => void;
 	public onOpenInNew?: (sessionPath: string) => void;
 	public onCancel?: () => void;
@@ -346,6 +347,7 @@ class SessionList implements Component, Focusable {
 		keybindings: KeybindingsManager,
 		private theme: PickerTheme,
 		currentSessionFilePath?: string,
+		currentCwd?: string,
 	) {
 		this.allSessions = sessions;
 		this.filteredSessions = [];
@@ -355,6 +357,8 @@ class SessionList implements Component, Focusable {
 		this.nameFilter = nameFilter;
 		this.keybindings = keybindings;
 		this.currentSessionCanonicalPath = canonicalizePath(currentSessionFilePath);
+		// Pin the current working directory's folder first (canonical so aliases match).
+		this.currentFolderCanonical = currentCwd ? (canonicalizePath(currentCwd) ?? currentCwd) : undefined;
 		this.filterSessions("");
 
 		// Handle Enter in search input - select current item
@@ -402,7 +406,14 @@ class SessionList implements Component, Focusable {
 				groups.set(folder, list);
 			}
 			const rows: FlatSessionNode[] = [];
-			for (const [folder, sessions] of groups) {
+			const folders = [...groups];
+			if (this.currentFolderCanonical) {
+				const canonical = this.currentFolderCanonical;
+				const isCurrent = (folder: string) => (canonicalizePath(folder) ?? folder) === canonical;
+				// Stable sort: current cwd folder first, others keep native global order.
+				folders.sort((a, b) => Number(isCurrent(b[0])) - Number(isCurrent(a[0])));
+			}
+			for (const [folder, sessions] of folders) {
 				const marker = `resume-plus-folder:${folder}`;
 				const latest = sessions.reduce((value, session) => Math.max(value, session.modified.getTime()), 0);
 				const folderSession = {
@@ -809,7 +820,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private sessionList: SessionList;
 	private header: SessionSelectorHeader;
 	private keybindings: KeybindingsManager;
-	private scope: SessionScope = "current";
+	private scope: SessionScope = "all"; // resume-plus: default to the All panel
 	private sortMode: SortMode = "threaded";
 	private nameFilter: NameFilter = "all";
 	private currentSessions: SessionInfo[] | null = null;
@@ -868,6 +879,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			renameSession?: (sessionPath: string, currentName: string | undefined) => Promise<void>;
 			showRenameHint?: boolean;
 			keybindings: KeybindingsManager;
+			/** Current working directory; its folder is pinned first in the grouped view. */
+			currentCwd?: string;
 		},
 		currentSessionFilePath?: string,
 	) {
@@ -887,12 +900,13 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		// Create session list (starts empty, will be populated after load)
 		this.sessionList = new SessionList(
 			[],
-			false,
+			this.scope === "all",
 			this.sortMode,
 			this.nameFilter,
 			this.keybindings,
 			this.theme,
 			currentSessionFilePath,
+			options.currentCwd,
 		);
 
 		this.buildBaseLayout(this.sessionList);
@@ -974,12 +988,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.requestRender();
 		};
 
-		// Start loading current sessions immediately
-		this.loadCurrentSessions();
-	}
-
-	private loadCurrentSessions(): void {
-		void this.loadScope("current", "initial");
+		// Default scope is All; current-folder sessions lazy-load on first Tab.
+		void this.loadScope(this.scope, "initial");
 	}
 
 	private enterRenameMode(sessionPath: string, currentName: string | undefined): void {
