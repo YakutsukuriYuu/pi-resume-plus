@@ -1,0 +1,8 @@
+# 开发依赖（npm install 重新生成）
+node_modules/
+
+# 由 tests/setup.mjs 根据本机 pi 安装路径生成
+tsconfig.json
+
+# 本机个人配置；仓库只发布 config.example.json
+config.json

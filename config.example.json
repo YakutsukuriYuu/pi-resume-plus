@@ -1,0 +1,11 @@
+{
+  "shiftEnter": {
+    "enabled": true,
+    "mode": "same",
+    "piPath": "/opt/homebrew/bin/pi",
+    "terminal": {
+      "type": "system",
+      "path": "/Applications/iTerm.app"
+    }
+  }
+}
