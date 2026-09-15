@@ -53,7 +53,8 @@ try {
         assert.deepEqual(search.filterAndSortSessions(sessions,query,sort,filter),nativeSearch.filterAndSortSessions(sessions,query,sort,filter));
   });
   await test('current scope matches native tree metadata, search, sort and named modes',async()=>{
-    const a=await make(), b=await make(Native);
+    // Compare against the native picker, so pin the native matcher (bare word = fuzzy).
+    const a=await make(Picker,sessions,{searchMode:'fuzzy'}), b=await make(Native);
     a.p.handleInput(keys.tab);await tick(); // default is All; Tab into Current
     for(const key of ['',keys.sort,keys.sort,keys.sort,'auth',keys.named,keys.sort,keys.named,'\x15']) {
       if(key) {a.p.handleInput(key);b.p.handleInput(key);}
@@ -160,6 +161,41 @@ try {
     assert.ok(rows(a.list).every(n=>!n.folderMatch));
     assert.equal(rows(a.list)[0].folderPath,'/alpha');
   });
+  await test('default search is strict substring; quotes switch to fuzzy',async()=>{
+    // "ssh" is scattered (not contiguous) in this path; substring must not match it.
+    const scattered={...fixture('scattered','/Users/su/Harness/Qwen',10,undefined,'unrelated title'),allMessagesText:'nothing relevant here'},
+          literal=fixture('literal','/plain/dir',20,undefined,'SSH debian');
+    const a=await make(Picker,[scattered,literal],{currentCwd:'/tmp'});
+    a.p.handleInput('ssh');
+    assert.deepEqual(rows(a.list).filter(n=>n.kind!=='folder').map(n=>n.session.id),['literal']);
+    a.p.handleInput('\x15');                       // clear the search
+    a.p.handleInput('"ssh"');                     // quoted form = fuzzy subsequence
+    assert.deepEqual(rows(a.list).filter(n=>n.kind!=='folder').map(n=>n.session.id).sort(),['literal','scattered']);
+  });
+  await test('fuzzy mode keeps native semantics: bare word is the fuzzy matcher',async()=>{
+    const scattered={...fixture('scattered','/Users/su/Harness/Qwen',10,undefined,'unrelated title'),allMessagesText:'nothing relevant here'};
+    const a=await make(Picker,[scattered],{currentCwd:'/tmp',searchMode:'fuzzy'});
+    a.p.handleInput('ssh');
+    assert.deepEqual(rows(a.list).filter(n=>n.kind!=='folder').map(n=>n.session.id),['scattered']);
+    a.p.handleInput('\x15');
+    a.p.handleInput('"ssh"');                     // quoted form = substring in fuzzy mode
+    assert.equal(rows(a.list).filter(n=>n.kind!=='folder').length,0);
+  });
+  await test('folder name matching honours the search mode',async()=>{
+    const s={...fixture('one','/Users/su/server-hub',10,undefined,'title'),allMessagesText:'no keyword here'};
+    const substring=await make(Picker,[s],{currentCwd:'/tmp'});
+    substring.p.handleInput('svh');                // fuzzy would match server-hub, substring must not
+    assert.equal(rows(substring.list).filter(n=>n.kind==='folder').length,0);
+    const fuzzy=await make(Picker,[s],{currentCwd:'/tmp',searchMode:'fuzzy'});
+    fuzzy.p.handleInput('svh');
+    assert.equal(rows(fuzzy.list)[0].folderMatch,'name');
+  });
+  await test('config: searchMode defaults to substring and validates',()=>{
+    assert.equal(config.parseConfig({}).searchMode,'substring');
+    assert.equal(config.parseConfig({searchMode:'fuzzy'}).searchMode,'fuzzy');
+    assert.equal(config.parseConfig({searchMode:'substring'}).searchMode,'substring');
+    assert.throws(()=>config.parseConfig({searchMode:'nope'}));
+  });
   await test('All folder order uses GLOBAL descendant activity (root mtime is old)',async()=>{
     const a=await make();
     assert.deepEqual(rows(a.list).filter(n=>n.kind==='folder').map(n=>n.folderPath),['/A','/B','/C']);
@@ -173,11 +209,11 @@ try {
     assert.deepEqual(r.map(n=>[n.session.id,n.depth,!!n.reference]),[['root',1,true],['child',2,true],['grandchild',3,false]]);
   });
   await test('All Alt+G has exact native GLOBAL order and tree metadata',async()=>{
-    const a=await make(Picker,sessions,{currentCwd:'/C'}),b=await make(Native);b.p.handleInput(keys.tab);await tick();a.p.handleInput(keys.group);
+    const a=await make(Picker,sessions,{currentCwd:'/C',searchMode:'fuzzy'}),b=await make(Native);b.p.handleInput(keys.tab);await tick();a.p.handleInput(keys.group);
     assert.deepEqual(rows(a.list),rows(b.list));
   });
   await test('grouped fuzzy results retain native rank within each cwd; no mtime re-sort',async()=>{
-    const a=await make();a.p.handleInput('auth');
+    const a=await make(Picker,sessions,{searchMode:'fuzzy'});a.p.handleInput('auth');
     for(const cwd of ['/A','/B','/C']) assert.deepEqual(rows(a.list).filter(n=>n.kind!=='folder'&&n.folderPath===cwd).map(n=>n.session.path),
       nativeSearch.filterAndSortSessions(sessions,'auth','threaded').filter(s=>s.cwd===cwd).map(s=>s.path));
   });

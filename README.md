@@ -57,7 +57,7 @@ pi remove git:github.com/YakutsukuriYuu/pi-resume-plus   # 卸载
 
 选择器组件直接复制自 pi 0.85.1 源码（见 `UPSTREAM.md`），并已用对照测试逐项回归：
 
-- 搜索：fuzzy、`"phrase"` 精确、`re:` 正则、多词 AND、无效正则，与原生算法**逐结果相等**
+- 搜索：默认**严格子串**（大小写不敏感，多词 AND）；`"文本"` 双引号 = **模糊匹配**；`re:` 正则。设 `searchMode: "fuzzy"` 可切回原生语义（此时裸词是模糊、`"文本"` 是精确子串），该模式下与原生算法**逐结果相等**
 - 排序：threaded（子树最新活动驱动）/ recent / relevance，与原生逐行相等
 - 命名过滤 Ctrl+N、路径显示 Ctrl+P、删除 Ctrl+D（trash 优先，回退 unlink）、重命名 Ctrl+R
 - 加载进度、错误提示、空列表提示、删除确认吞键、IME 焦点传播
@@ -94,12 +94,14 @@ pi remove git:github.com/YakutsukuriYuu/pi-resume-plus   # 卸载
     "mode": "same",
     "piPath": "/opt/homebrew/bin/pi",
     "terminal": { "type": "system", "path": "/Applications/iTerm.app" }
-  }
+  },
+  "searchMode": "substring"
 }
 ```
 
 | 字段 | 说明 |
 |---|---|
+| `searchMode` | `substring`（默认）：裸词必须**字面包含**；`"文本"` = 模糊子序列。`fuzzy`：裸词 = 模糊子序列（原生 pi 行为），`"文本"` = 精确子串。`re:` 正则两种模式都可用 |
 | `enabled` | `false` 时 Shift+Enter 完全无效（即使被重绑定为确认/删除也不会触发），提示也不显示 |
 | `mode` | `same`（`pi --session`，默认）或 `fork`（`pi --fork`） |
 | `piPath` | pi 可执行文件；不存在时明确报错。建议绝对路径 |

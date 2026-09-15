@@ -30,3 +30,10 @@ Deviations required by the public extension API (pi does not expose these intern
    opens in the All scope (upstream opens Current Folder; All loads immediately and Current
    lazy-loads on first Tab instead), and the grouped view pins the current cwd folder first
    using canonical path comparison. The Alt+G native-order view has no pinning.
+7. **Search matcher is selectable** (`searchMode`): upstream has one hard-coded scheme (bare
+   word = fuzzy subsequence, `"quoted"` = exact substring). `session-selector-search.ts` now
+   takes a `SearchMode` argument — its default `"fuzzy"` keeps upstream semantics exactly
+   (that is what the native-parity tests compare against) — and the picker passes the
+   configured mode, defaulting to `"substring"` (bare word = literal substring, `"quoted"` =
+   fuzzy). This exists because fuzzy subsequence matching over long search text is very
+   noisy: `ssh` matches `/Users/<user>/…/Harness/…` via User*s* + yakutu*s*ukuriyuu + *H*arness.

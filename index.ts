@@ -55,6 +55,7 @@ export default function (pi: ExtensionAPI) {
     try { config = readConfig(); }
     catch (error) { ctx.ui.notify(String(error), "error"); return; }
     const shiftEnter = config.shiftEnter;
+    const searchMode = config.searchMode;
     const cwd = ctx.sessionManager.getCwd();
     const sessionDir = ctx.sessionManager.getSessionDir();
     const currentFile = ctx.sessionManager.getSessionFile();
@@ -104,6 +105,7 @@ export default function (pi: ExtensionAPI) {
                 },
                 showRenameHint: true,
                 currentCwd: cwd,
+                searchMode,
                 onOpenInNew: shiftEnter.enabled ? (path) => done({ action: "terminal", path }) : undefined,
               },
               currentFile,

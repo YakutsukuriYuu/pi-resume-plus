@@ -22,7 +22,7 @@ import type { PickerTheme } from "./theme.ts";
 import { canonicalizePath } from "./paths.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { createHints } from "./keybinding-hints.ts";
-import { filterAndSortSessions, hasSessionName, matchSession, parseSearchQuery, type NameFilter, type SortMode } from "./session-selector-search.ts";
+import { filterAndSortSessions, hasSessionName, matchSession, parseSearchQuery, resolveTokenMatcher, type NameFilter, type SearchMode, type SortMode } from "./session-selector-search.ts";
 
 type SessionScope = "current" | "all";
 
@@ -66,7 +66,8 @@ class SessionSelectorHeader implements Component {
 
 	private grouped = true;
 	constructor(scope: SessionScope, sortMode: SortMode, nameFilter: NameFilter, requestRender: () => void,
-		private theme: PickerTheme, private keybindings: KeybindingsManager, private showOpenInNewHint: boolean) {
+		private theme: PickerTheme, private keybindings: KeybindingsManager, private showOpenInNewHint: boolean,
+		private searchMode: SearchMode = "substring") {
 		this.scope = scope;
 		this.sortMode = sortMode;
 		this.nameFilter = nameFilter;
@@ -171,7 +172,9 @@ class SessionSelectorHeader implements Component {
 			const pathState = this.showPath ? "(on)" : "(off)";
 			const sep = theme.fg("muted", " · ");
 			const hint1 =
-				keyHint("tui.input.tab", "scope") + sep + theme.fg("muted", 're:<pattern> regex · "phrase" exact');
+				keyHint("tui.input.tab", "scope") + sep + theme.fg("muted", this.searchMode === "fuzzy"
+					? 'text fuzzy · "text" exact · re:<pattern> regex'
+					: 'text substring · "text" fuzzy · re:<pattern> regex');
 			const hint2Parts = [
 				keyHint("app.session.toggleSort", "sort"),
 				keyHint("app.session.toggleNamedFilter", "named"),
@@ -253,7 +256,7 @@ function orderFolderSessions(sessions: SessionInfo[], sortMode: SortMode): Sessi
  * ("ssh" matches "/Users/.../Harness/..." via User*s*, yakutu*s*ukuriyuu, *H*arness),
  * which collapsed every folder into the same tier and fell back to recency.
  */
-function matchFolder(folder: string, query: string): FolderMatch | undefined {
+function matchFolder(folder: string, query: string, mode: SearchMode): FolderMatch | undefined {
 	if (!query.trim()) return undefined;
 	const parsed = parseSearchQuery(query);
 	if (parsed.error) return undefined;
@@ -263,10 +266,10 @@ function matchFolder(folder: string, query: string): FolderMatch | undefined {
 		if (parsed.tokens.length === 0) return false;
 		let normalized: string | null = null;
 		for (const token of parsed.tokens) {
-			if (token.kind === "phrase") {
+			if (resolveTokenMatcher(token.kind, mode) === "substring") {
 				normalized ??= normalizeForMatch(text);
-				const phrase = normalizeForMatch(token.value);
-				if (phrase && !normalized.includes(phrase)) return false;
+				const needle = normalizeForMatch(token.value);
+				if (needle && !normalized.includes(needle)) return false;
 				continue;
 			}
 			if (!fuzzyMatch(token.value, text).matches) return false;
@@ -425,6 +428,7 @@ class SessionList implements Component, Focusable {
 		nameFilter: NameFilter,
 		keybindings: KeybindingsManager,
 		private theme: PickerTheme,
+		private searchMode: SearchMode = "substring",
 		currentSessionFilePath?: string,
 		currentCwd?: string,
 	) {
@@ -476,7 +480,7 @@ class SessionList implements Component, Focusable {
 		if (this.showCwd && this.grouped) {
 			const roots = this.sortMode === "threaded" && !trimmed ? buildSessionTree(nameFiltered) : null;
 			const filtered = roots ? flattenSessionTree(roots).map((node) => node.session)
-				: filterAndSortSessions(nameFiltered, query, this.sortMode, "all");
+				: filterAndSortSessions(nameFiltered, query, this.sortMode, "all", this.searchMode);
 
 			// Folder-name search (resume-plus): a query that matches a folder name or path
 			// surfaces that folder first and expands it to ALL of its sessions, instead of
@@ -492,7 +496,7 @@ class SessionList implements Component, Focusable {
 			const parsedQuery = trimmed ? parseSearchQuery(query) : null;
 			if (parsedQuery && !parsedQuery.error) {
 				for (const folder of allByFolder.keys()) {
-					const hit = matchFolder(folder, query);
+					const hit = matchFolder(folder, query, this.searchMode);
 					if (hit) folderHits.set(folder, hit);
 				}
 			}
@@ -500,7 +504,7 @@ class SessionList implements Component, Focusable {
 			const folderScores = new Map<string, number>();
 			if (parsedQuery && !parsedQuery.error) {
 				for (const session of filtered) {
-					const result = matchSession(session, parsedQuery);
+					const result = matchSession(session, parsedQuery, this.searchMode);
 					if (!result.matches) continue;
 					const folder = session.cwd || "(unknown folder)";
 					const current = folderScores.get(folder);
@@ -581,7 +585,7 @@ class SessionList implements Component, Focusable {
 			const roots = buildSessionTree(nameFiltered);
 			this.filteredSessions = flattenSessionTree(roots);
 		} else {
-			const filtered = filterAndSortSessions(nameFiltered, query, this.sortMode, "all");
+			const filtered = filterAndSortSessions(nameFiltered, query, this.sortMode, "all", this.searchMode);
 			this.filteredSessions = filtered.map((session) => ({ session, depth: 0, isLast: true, ancestorContinues: [], kind: "session" }));
 		}
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredSessions.length - 1));
@@ -1013,6 +1017,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			keybindings: KeybindingsManager;
 			/** Current working directory; its folder is pinned first in the grouped view. */
 			currentCwd?: string;
+			/** Bare-word matcher: "substring" (default) or "fuzzy". */
+			searchMode?: SearchMode;
 		},
 		currentSessionFilePath?: string,
 	) {
@@ -1023,7 +1029,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.allSessionsLoader = allSessionsLoader;
 		this.requestRender = requestRender;
 		this.header = new SessionSelectorHeader(this.scope, this.sortMode, this.nameFilter, this.requestRender,
-			this.theme, this.keybindings, !!options.onOpenInNew);
+			this.theme, this.keybindings, !!options.onOpenInNew, options.searchMode ?? "substring");
 		const renameSession = options?.renameSession;
 		this.renameSession = renameSession;
 		this.canRename = !!renameSession;
@@ -1037,6 +1043,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.nameFilter,
 			this.keybindings,
 			this.theme,
+			options.searchMode ?? "substring",
 			currentSessionFilePath,
 			options.currentCwd,
 		);

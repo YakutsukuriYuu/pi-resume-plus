@@ -5,6 +5,21 @@ export type SortMode = "threaded" | "recent" | "relevance";
 
 export type NameFilter = "all" | "named";
 
+/**
+ * Which matcher bare words use. Quoted words always use the other one:
+ * - "fuzzy" (native pi behaviour): bare = fuzzy subsequence, "quoted" = substring
+ * - "substring" (resume-plus default): bare = substring, "quoted" = fuzzy
+ *
+ * The difference matters for long search text: fuzzy matches scattered
+ * characters ('ssh' hits "/Users/.../Harness/..."), substring does not.
+ */
+export type SearchMode = "substring" | "fuzzy";
+
+export function resolveTokenMatcher(kind: "fuzzy" | "phrase", mode: SearchMode): "fuzzy" | "substring" {
+	if (mode === "fuzzy") return kind === "fuzzy" ? "fuzzy" : "substring";
+	return kind === "fuzzy" ? "substring" : "fuzzy";
+}
+
 export interface ParsedSearchQuery {
 	mode: "tokens" | "regex";
 	tokens: { kind: "fuzzy" | "phrase"; value: string }[];
@@ -113,7 +128,7 @@ export function parseSearchQuery(query: string): ParsedSearchQuery {
 	return { mode: "tokens", tokens, regex: null };
 }
 
-export function matchSession(session: SessionInfo, parsed: ParsedSearchQuery): MatchResult {
+export function matchSession(session: SessionInfo, parsed: ParsedSearchQuery, mode: SearchMode = "fuzzy"): MatchResult {
 	const text = getSessionSearchText(session);
 
 	if (parsed.mode === "regex") {
@@ -133,7 +148,7 @@ export function matchSession(session: SessionInfo, parsed: ParsedSearchQuery): M
 	let normalizedText: string | null = null;
 
 	for (const token of parsed.tokens) {
-		if (token.kind === "phrase") {
+		if (resolveTokenMatcher(token.kind, mode) === "substring") {
 			if (normalizedText === null) {
 				normalizedText = normalizeWhitespaceLower(text);
 			}
@@ -158,6 +173,7 @@ export function filterAndSortSessions(
 	query: string,
 	sortMode: SortMode,
 	nameFilter: NameFilter = "all",
+	mode: SearchMode = "fuzzy",
 ): SessionInfo[] {
 	const nameFiltered =
 		nameFilter === "all" ? sessions : sessions.filter((session) => matchesNameFilter(session, nameFilter));
@@ -171,7 +187,7 @@ export function filterAndSortSessions(
 	if (sortMode === "recent") {
 		const filtered: SessionInfo[] = [];
 		for (const s of nameFiltered) {
-			const res = matchSession(s, parsed);
+			const res = matchSession(s, parsed, mode);
 			if (res.matches) filtered.push(s);
 		}
 		return filtered;
@@ -180,7 +196,7 @@ export function filterAndSortSessions(
 	// Relevance mode: sort by score, tie-break by modified desc.
 	const scored: { session: SessionInfo; score: number }[] = [];
 	for (const s of nameFiltered) {
-		const res = matchSession(s, parsed);
+		const res = matchSession(s, parsed, mode);
 		if (!res.matches) continue;
 		scored.push({ session: s, score: res.score });
 	}
