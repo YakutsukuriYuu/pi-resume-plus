@@ -268,10 +268,43 @@ try {
     const wrong=pi.SessionManager.open(misplacedFile);
     assert.notEqual(wrong.getSessionDir(),paths.defaultSessionDir(wrong.getCwd()),'documents the degraded-All condition');
   });
+  await test('unused-session cleanup removes only never-used sessions (trash then unlink)',async()=>{
+    const files=await jiti.import(join(plugin,'session-files.ts'));
+    const dir=join(temp,'cleanup-sessions');mkdirSync(dir);
+    const make=(id,extra=[])=>{const m=pi.SessionManager.create(join(temp,'proj-cleanup'),dir);const f=m.getSessionFile();
+      writeFileSync(f,`${JSON.stringify(m.getHeader())}\n`);for(const e of extra)writeFileSync(f,`${JSON.stringify(e)}\n`,{flag:'a'});return f;};
+    const ts=new Date().toISOString();
+    const unused=make('unused');
+    const used=make('used',[{type:'message',id:'a1',parentId:null,timestamp:ts,message:{role:'user',content:'hello'}}]);
+    const named=make('named',[{type:'session_info',id:'b1',parentId:null,timestamp:ts,name:'keep me'}]);
+    const labelled=make('labelled',[{type:'label',id:'c1',parentId:null,timestamp:ts,targetId:'x',label:'keep'} ]);
+    assert.equal(files.isSessionUnused(unused),true);
+    assert.equal(files.isSessionUnused(used),false);
+    assert.equal(files.isSessionUnused(named),false);
+    assert.equal(files.isSessionUnused(labelled),false);
+    assert.equal(files.isSessionUnused(join(dir,'missing.jsonl')),false,'unknown files are never "unused"');
+    // The current session is kept even when unused; used/named ones are kept and untracked.
+    for(const f of [unused,used,named,labelled]) files.trackUnusedSession(f);
+    files.cleanupTrackedUnusedSessions(unused);
+    assert.ok(existsSync(unused),'the active session must be kept');
+    assert.equal(files.trackedUnusedCount(),1,'the kept session stays tracked so it is cleaned when we leave it');
+    // Without a current session, the unused one is removed (PATH makes trash fail -> unlink).
+    const bin=join(temp,'bin-cleanup');mkdirSync(bin,{recursive:true});writeFileSync(join(bin,'trash'),'#!/bin/sh\nexit 1\n',{mode:0o755});
+    const oldPath=process.env.PATH;process.env.PATH=bin;
+    try {
+      files.cleanupTrackedUnusedSessions();
+      assert.ok(!existsSync(unused),'unused session removed');
+      assert.equal(files.trackedUnusedCount(),0);
+    } finally { process.env.PATH=oldPath; }
+    assert.ok(existsSync(used)&&existsSync(named)&&existsSync(labelled),'used sessions survive cleanup');
+  });
   await test('config: folderNewSession defaults to enabled and validates',()=>{
     assert.equal(config.parseConfig({}).folderNewSession.enabled,true);
+    assert.equal(config.parseConfig({}).folderNewSession.cleanupUnused,true);
     assert.equal(config.parseConfig({folderNewSession:{enabled:false}}).folderNewSession.enabled,false);
+    assert.equal(config.parseConfig({folderNewSession:{cleanupUnused:false}}).folderNewSession.cleanupUnused,false);
     assert.throws(()=>config.parseConfig({folderNewSession:{enabled:'no'}}));
+    assert.throws(()=>config.parseConfig({folderNewSession:{cleanupUnused:'no'}}));
     assert.throws(()=>config.parseConfig({folderNewSession:[]}));
   });
   await test('All folder order uses GLOBAL descendant activity (root mtime is old)',async()=>{

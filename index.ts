@@ -5,6 +5,7 @@ import { readConfig } from "./config.ts";
 import { launchInTerminal } from "./terminal-launcher.ts";
 import { canonicalizePath, defaultSessionDir } from "./paths.ts";
 import { registerActiveSession, unregisterActiveSession, isSessionActive } from "./active-sessions.ts";
+import { cleanupTrackedUnusedSessions, deleteSessionFile, trackUnusedSession, untrackUnusedSession } from "./session-files.ts";
 
 type Selection =
   | { action: "resume" | "terminal"; path: string }
@@ -25,6 +26,9 @@ const STARTUP_FLAGS = ["rr", "resume-plus"] as const;
  */
 let startupOverlayPending = false;
 
+/** Whether unused sessions created by this extension are cleaned up (config, default true). */
+let cleanupUnused = true;
+
 export default function (pi: ExtensionAPI) {
   for (const name of STARTUP_FLAGS) {
     pi.registerFlag(name, {
@@ -36,6 +40,14 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", (event, ctx) => {
     try { registerActiveSession(ctx.sessionManager.getSessionFile(), ctx.cwd); }
     catch (error) { ctx.ui.notify(`resume-plus 活跃登记失败：${String(error)}`, "warning"); }
+    try { cleanupUnused = readConfig().folderNewSession.cleanupUnused; }
+    catch { /* keep the previous value when the config is unreadable */ }
+    // Leaving a session we created means it never got used: drop it, like pi's own
+    // lazy persistence would never have written it. The current session is kept.
+    if (cleanupUnused) {
+      try { cleanupTrackedUnusedSessions(ctx.sessionManager.getSessionFile()); }
+      catch { /* cleanup must never break session startup */ }
+    }
 
     if (event.reason !== "startup" || ctx.mode !== "tui") return;
     if (!STARTUP_FLAGS.some((name) => pi.getFlag(name) === true)) return;
@@ -46,8 +58,12 @@ export default function (pi: ExtensionAPI) {
     startupOverlayPending = true;
     pi.sendUserMessage("/r", { expandPromptTemplates: true });
   });
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (event) => {
     try { unregisterActiveSession(); } catch { /* Must not block pi shutdown. */ }
+    // On quit the session we are sitting in will never be used; reload keeps it.
+    if (event.reason === "quit" && cleanupUnused) {
+      try { cleanupTrackedUnusedSessions(); } catch { /* never block shutdown */ }
+    }
   });
 
   const open = async (_args: string, ctx: ExtensionCommandContext) => {
@@ -182,7 +198,12 @@ export default function (pi: ExtensionAPI) {
         // open() would fall back to process.cwd() (the current directory). Persist
         // the generated header, which makes it a valid session file for that cwd.
         writeFileSync(file, `${JSON.stringify(header)}\n`, { flag: "wx" });
-        await ctx.switchSession(file);
+        if (cleanupUnused) trackUnusedSession(file);
+        const result = await ctx.switchSession(file);
+        if (result?.cancelled) {
+          // The switch was vetoed, so this fresh session was never entered.
+          if (cleanupUnused) { untrackUnusedSession(file); try { deleteSessionFile(file); } catch { /* ignore */ } }
+        }
       } catch (error) {
         ctx.ui.notify(`无法在 ${folder} 新建会话：${error instanceof Error ? error.message : String(error)}`, "error");
         restoreEditorFocus();

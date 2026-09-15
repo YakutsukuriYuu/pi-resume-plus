@@ -70,12 +70,36 @@ class Session:
         return False
 
     def close(self):
+        if getattr(self, "closed", False):
+            return
+        self.closed = True
         try: self.proc.terminate()
         except Exception: pass
         try: self.proc.wait(timeout=5)
         except Exception:
             try: os.killpg(self.proc.pid, signal.SIGKILL)
             except Exception: pass
+
+    def quit(self):
+        """End pi so shutdown handlers run: Ctrl+C twice, then SIGTERM, waiting for exit."""
+        try:
+            os.write(self.master, b"\x03"); self.pump(1.0)
+            os.write(self.master, b"\x03"); self.pump(1.0)
+        except OSError:
+            pass
+        try:
+            self.proc.wait(timeout=2)
+            self.closed = True
+            return
+        except Exception:
+            pass
+        try: self.proc.terminate()      # SIGTERM is a documented graceful exit path
+        except Exception: pass
+        try:
+            self.proc.wait(timeout=8)
+            self.closed = True
+        except Exception:
+            pass
 
 
 def check(name, ok, detail=""):
@@ -184,6 +208,11 @@ def mode_new_in_folder():
     seeds = {seed_session(proj), seed_session(other)}
     other_dir = os.path.join(agent, "sessions", encoded(other))
     proj_dir = os.path.join(agent, "sessions", encoded(proj))
+    # Safety: keep the terminal path off so a stray Shift+Enter on a session row
+    # can never spawn a real terminal window during tests.
+    with open(os.path.join(ext, "config.json"), "w", encoding="utf-8") as fh:
+        json.dump({"shiftEnter": {"enabled": False},
+                   "folderNewSession": {"enabled": True, "cleanupUnused": True}}, fh)
     env = {**os.environ, "PI_CODING_AGENT_DIR": agent}
     s = Session([], cwd=proj, env=env)
 
@@ -217,11 +246,24 @@ def mode_new_in_folder():
         ok &= check("pi keeps appending to it (header was valid)",
                     any("level_change" in open(os.path.join(other_dir, f), encoding="utf-8").read() for f in created))
         # The reported symptom: after such a switch the All scope showed a single directory.
+        s.send(b"\x15", 0.5)         # clear the editor before typing a command
         mark = s.mark()
         s.send(b"/r")
         s.send(b"\r", 4)
         ok &= check("/r All still lists every project after the switch",
-                    s.wait_until(lambda _t: "proj" in s.since(mark) and "otherproj" in s.since(mark), 20))
+                    s.wait_until(lambda _t: "Resume Session (All)" in s.since(mark)
+                                 and "otherproj" in s.since(mark), 20))
+        # Leaving the unused new session (by creating one in the other project)
+        # must remove it, and quitting while unused must remove that one too.
+        s.send(b"\x1b[1;2B", 0.8)    # shift+down -> the other project's folder row
+        s.send(b"\x1b[13;2u", 2)     # shift+enter -> new session there
+        s.pump(1.5)
+        ok &= check("leaving an unused new session cleans it up",
+                    len(session_files(other_dir)) == 1 and len(session_files(proj_dir)) == 2,
+                    f"(other={len(session_files(other_dir))}, proj={len(session_files(proj_dir))})")
+        s.quit()
+        ok &= check("quitting while sitting in an unused new session cleans it up",
+                    len(session_files(proj_dir)) == 1, f"(proj={session_files(proj_dir)})")
         ok &= check("no error notification", "无法在" not in s.text())
         return ok
     finally:

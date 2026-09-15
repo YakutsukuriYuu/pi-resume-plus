@@ -42,6 +42,11 @@ Deviations required by the public extension API (pi does not expose these intern
      default on) — the command handler writes the generated session header and then calls the
      public `ctx.switchSession()`. Upstream's own Shift+Enter only opens a terminal and is
      governed by `shiftEnter.enabled`; the two settings are intentionally independent.
+     Because the header must be written early (pi itself defers it to the first assistant
+     message), `folderNewSession.cleanupUnused` (default on) removes such a session when it is
+     left or when pi exits without ever receiving an entry. Tracking lives in a per-PID state
+     file under `~/.pi/agent/resume-plus-unused/` (not module state, which is lost on session
+     replacement), and dead-PID files are swept so a hard-killed pi is cleaned up too.
    - `Shift+Left` / `Shift+Right` collapse / expand every folder in the grouped view.
    - grouping, folder search, current-folder pinning and `Alt+G` are likewise extensions; the
      native (ungrouped) view never uses them.

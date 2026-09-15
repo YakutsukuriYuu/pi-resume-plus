@@ -10,6 +10,7 @@
   },
   "searchMode": "substring",
   "folderNewSession": {
-    "enabled": true
+    "enabled": true,
+    "cleanupUnused": true
   }
 }

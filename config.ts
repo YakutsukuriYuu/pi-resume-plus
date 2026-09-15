@@ -19,7 +19,11 @@ export type ShiftEnterConfig = {
   terminal: TerminalConfig;
 };
 /** Folder-row Shift+Enter creates a new session in that folder. Independent of shiftEnter. */
-export type FolderNewSessionConfig = { enabled: boolean };
+export type FolderNewSessionConfig = {
+  enabled: boolean;
+  /** Remove sessions created this way if they never receive anything (default true). */
+  cleanupUnused: boolean;
+};
 export type ResumePlusConfig = { shiftEnter: ShiftEnterConfig; /** Bare-word matcher: "substring" (default) or "fuzzy" (native pi). */ searchMode: SearchMode; folderNewSession: FolderNewSessionConfig };
 export const configPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "config.json");
 const terminals = ["system", "Terminal.app", "iTerm2", "WezTerm", "Kitty", "Ghostty", "Alacritty", "x-terminal-emulator", "gnome-terminal", "konsole", "xterm", "custom"];
@@ -41,13 +45,15 @@ export function parseConfig(value: unknown): ResumePlusConfig {
   if (root.searchMode !== undefined && root.searchMode !== "substring" && root.searchMode !== "fuzzy") throw new Error('searchMode 必须为 "substring" 或 "fuzzy"');
   const folderNewSession = root.folderNewSession === undefined ? {} : object(root.folderNewSession, "folderNewSession");
   if (folderNewSession.enabled !== undefined && typeof folderNewSession.enabled !== "boolean") throw new Error("folderNewSession.enabled 必须为 boolean");
+  if (folderNewSession.cleanupUnused !== undefined && typeof folderNewSession.cleanupUnused !== "boolean") throw new Error("folderNewSession.cleanupUnused 必须为 boolean");
   return { shiftEnter: {
     enabled: shift.enabled === undefined ? true : shift.enabled as boolean,
     mode: shift.mode === "fork" ? "fork" : "same",
     piPath: shift.piPath as string ?? "pi",
     terminal: { type: "system", ...terminal } as TerminalConfig,
   }, searchMode: root.searchMode === "fuzzy" ? "fuzzy" : "substring",
-    folderNewSession: { enabled: folderNewSession.enabled === undefined ? true : folderNewSession.enabled as boolean } };
+    folderNewSession: { enabled: folderNewSession.enabled === undefined ? true : folderNewSession.enabled as boolean,
+      cleanupUnused: folderNewSession.cleanupUnused === undefined ? true : folderNewSession.cleanupUnused as boolean } };
 }
 export function readConfig(file = configPath): ResumePlusConfig {
   try { return parseConfig(JSON.parse(readFileSync(file, "utf8"))); }
