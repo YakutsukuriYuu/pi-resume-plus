@@ -68,6 +68,19 @@ export default function (pi: ExtensionAPI) {
     };
     const overlay = startupOverlayPending;
     startupOverlayPending = false;
+    // Closing an overlay restores focus to the target captured when it was shown.
+    // During pi's startup that target is undefined or the since-replaced editor
+    // instance, so nothing owns the keyboard afterwards. Re-installing the current
+    // editor (public API; its setEditorComponent path ends with setFocus(editor))
+    // hands focus back to the live editor. Only the startup/overlay path needs it.
+    const restoreEditorFocus = () => {
+      if (!overlay) return;
+      try {
+        const previous = ctx.ui.getEditorComponent();
+        ctx.ui.setEditorComponent(undefined);
+        if (previous) ctx.ui.setEditorComponent(previous);
+      } catch { /* best effort: never fail the command because of focus repair */ }
+    };
     let picker: SessionSelectorComponent | undefined;
     let focusWatchdog: ReturnType<typeof setInterval> | undefined;
     const selected = await (async (): Promise<Selection> => {
@@ -133,7 +146,7 @@ export default function (pi: ExtensionAPI) {
         if (focusWatchdog) clearInterval(focusWatchdog);
       }
     })();
-    if (!selected) return;
+    if (!selected) { restoreEditorFocus(); return; }
     if (selected.action === "exit") { ctx.shutdown(); return; }
     if (selected.action === "resume") {
       // This is the native handleResumeSession path: trust, missing cwd prompt,
@@ -159,6 +172,7 @@ export default function (pi: ExtensionAPI) {
     } catch (error) {
       ctx.ui.notify(`无法启动新终端：${error instanceof Error ? error.message : String(error)}`, "error");
     }
+    restoreEditorFocus(); // we stayed in this session, so typing must work again
   };
   pi.registerCommand("r", { description: "原生会话选择器＋项目目录树", handler: open });
   pi.registerCommand("resume-tree", { description: "原生会话选择器＋项目目录树", handler: open });
