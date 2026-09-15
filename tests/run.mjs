@@ -91,6 +91,54 @@ try {
     const a=await make(Picker,[fixture('pinned',realDir,50),fixture('other2','/B',100)],{currentCwd:aliasDir});
     assert.deepEqual(rows(a.list).filter(n=>n.kind==='folder').map(n=>n.folderPath),[realDir,'/B']);
   });
+  await test('folder-name search expands that folder to all its sessions',async()=>{
+    const f1=fixture('alpha-one','/alpha',10,undefined,'one'),
+          f2=fixture('alpha-two','/alpha',20,undefined,'two'),
+          other=fixture('beta-one','/beta',30,undefined,'three');
+    // Anchored regex matches the folder NAME but no session text: only the
+    // folder-name path can surface these sessions.
+    const a=await make(Picker,[f1,f2,other],{currentCwd:'/tmp'});
+    a.p.handleInput('re:^alpha$');
+    const r=rows(a.list);
+    assert.equal(r[0].kind,'folder');assert.equal(r[0].folderPath,'/alpha');assert.equal(r[0].folderMatch,'name');
+    assert.equal(r[0].session.messageCount,2);
+    assert.deepEqual(r.filter(n=>n.kind!=='folder').map(n=>n.session.id).sort(),['alpha-one','alpha-two']);
+    assert.ok(!r.some(n=>n.folderPath==='/beta'),'non-matching folder must not appear');
+  });
+  await test('folder-name matches sort above content-only matches and keep their marker',async()=>{
+    const f1=fixture('alpha-one','/alpha',10,undefined,'one'),
+          f2=fixture('alpha-two','/alpha',20,undefined,'two'),
+          byContent={...fixture('beta-one','/beta',90,undefined,'three'),allMessagesText:'alpha appears only in the body of this conversation'};
+    const a=await make(Picker,[f1,f2,byContent],{currentCwd:'/tmp'});
+    a.p.handleInput('alpha');
+    const r=rows(a.list);
+    assert.equal(r[0].folderPath,'/alpha');assert.equal(r[0].folderMatch,'exact');
+    assert.equal(r.filter(n=>n.kind!=='folder'&&n.folderPath==='/alpha').length,2);
+    const beta=r.find(n=>n.kind==='folder'&&n.folderPath==='/beta');
+    assert.ok(beta&&!beta.folderMatch,'content-only folder keeps no marker');
+    assert.ok(r.findIndex(n=>n.kind==='folder'&&n.folderPath==='/alpha')<r.findIndex(n=>n.kind==='folder'&&n.folderPath==='/beta'));
+  });
+  await test('folder path matches are supported and marked as path matches',async()=>{
+    const p1=fixture('team-one','/team/alpha-project',10,undefined,'x');
+    const a=await make(Picker,[p1],{currentCwd:'/tmp'});
+    a.p.handleInput('team');
+    const r=rows(a.list);
+    assert.equal(r[0].folderMatch,'path');
+    assert.equal(r.filter(n=>n.kind!=='folder').length,1);
+  });
+  await test('expanded folder still honours the Named filter',async()=>{
+    const named=fixture('alpha-named','/alpha',10,undefined,'has a name'),
+          unnamed={...fixture('alpha-unnamed','/alpha',20,undefined,'')};
+    const a=await make(Picker,[named,unnamed],{currentCwd:'/tmp'});
+    a.p.handleInput(keys.named);
+    a.p.handleInput('re:^alpha$');
+    assert.deepEqual(rows(a.list).filter(n=>n.kind!=='folder').map(n=>n.session.id),['alpha-named']);
+  });
+  await test('no query means no folder-match markers, current cwd still pinned',async()=>{
+    const a=await make(Picker,[fixture('alpha-one','/alpha',10),fixture('beta-one','/beta',20)],{currentCwd:'/alpha'});
+    assert.ok(rows(a.list).every(n=>!n.folderMatch));
+    assert.equal(rows(a.list)[0].folderPath,'/alpha');
+  });
   await test('All folder order uses GLOBAL descendant activity (root mtime is old)',async()=>{
     const a=await make();
     assert.deepEqual(rows(a.list).filter(n=>n.kind==='folder').map(n=>n.folderPath),['/A','/B','/C']);

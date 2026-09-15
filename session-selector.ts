@@ -6,6 +6,7 @@ import {
 	type Component,
 	Container,
 	type Focusable,
+	fuzzyMatch,
 	matchesKey,
 	Input,
 	Spacer,
@@ -21,7 +22,7 @@ import type { PickerTheme } from "./theme.ts";
 import { canonicalizePath } from "./paths.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { createHints } from "./keybinding-hints.ts";
-import { filterAndSortSessions, hasSessionName, type NameFilter, type SortMode } from "./session-selector-search.ts";
+import { filterAndSortSessions, hasSessionName, parseSearchQuery, type NameFilter, type SortMode } from "./session-selector-search.ts";
 
 type SessionScope = "current" | "all";
 
@@ -214,6 +215,70 @@ interface FlatSessionNode {
 	folderPath?: string;
 	/** Ancestor from another cwd; not included in the folder's session count. */
 	reference?: boolean;
+	/** resume-plus: the folder itself matched the query, so it is expanded to all its sessions. */
+	folderMatch?: FolderMatch;
+}
+
+/** How a folder matched the query. Lower tier sorts first. */
+type FolderMatch = "exact" | "prefix" | "name" | "path";
+const FOLDER_MATCH_TIER: Record<FolderMatch, number> = { exact: 0, prefix: 1, name: 2, path: 3 };
+
+function normalizeForMatch(text: string): string {
+	return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/** Folder label shown in the tree: last path segment, e.g. "pi-hub". */
+function folderLabel(folder: string): string {
+	return folder.split(/[\\/]/).filter(Boolean).pop() ?? folder;
+}
+
+function latestModified(sessions: SessionInfo[]): number {
+	return sessions.reduce((value, session) => Math.max(value, session.modified.getTime()), 0);
+}
+
+/** Natural order of a single folder's sessions (thread tree, else most recent first). */
+function orderFolderSessions(sessions: SessionInfo[], sortMode: SortMode): SessionInfo[] {
+	return sortMode === "threaded"
+		? flattenSessionTree(buildSessionTree(sessions)).map((node) => node.session)
+		: [...sessions].sort((a, b) => b.modified.getTime() - a.modified.getTime());
+}
+
+/**
+ * resume-plus enhancement: make the folder (project) name and path first-class
+ * search targets, so searching a project name surfaces that project's sessions
+ * instead of being drowned out by incidental matches in message text.
+ */
+function matchFolder(folder: string, query: string): FolderMatch | undefined {
+	if (!query.trim()) return undefined;
+	const parsed = parseSearchQuery(query);
+	if (parsed.error) return undefined;
+	const name = folderLabel(folder);
+	const matches = (text: string): boolean => {
+		if (parsed.mode === "regex") return parsed.regex ? parsed.regex.test(text) : false;
+		if (parsed.tokens.length === 0) return false;
+		let normalized: string | null = null;
+		for (const token of parsed.tokens) {
+			if (token.kind === "phrase") {
+				normalized ??= normalizeForMatch(text);
+				const phrase = normalizeForMatch(token.value);
+				if (phrase && !normalized.includes(phrase)) return false;
+				continue;
+			}
+			if (!fuzzyMatch(token.value, text).matches) return false;
+		}
+		return true;
+	};
+	const single = parsed.mode === "tokens" && parsed.tokens.length === 1 && parsed.tokens[0]!.kind === "fuzzy"
+		? normalizeForMatch(parsed.tokens[0]!.value)
+		: undefined;
+	if (single) {
+		const lowerName = name.toLowerCase();
+		if (lowerName === single) return "exact";
+		if (lowerName.startsWith(single)) return "prefix";
+	}
+	if (matches(name)) return "name";
+	if (matches(folder)) return "path";
+	return undefined;
 }
 
 /**
@@ -398,12 +463,38 @@ class SessionList implements Component, Focusable {
 			const roots = this.sortMode === "threaded" && !trimmed ? buildSessionTree(nameFiltered) : null;
 			const filtered = roots ? flattenSessionTree(roots).map((node) => node.session)
 				: filterAndSortSessions(nameFiltered, query, this.sortMode, "all");
+
+			// Folder-name search (resume-plus): a query that matches a folder name or path
+			// surfaces that folder first and expands it to ALL of its sessions, instead of
+			// only the sessions that happened to match the query themselves.
+			const allByFolder = new Map<string, SessionInfo[]>();
+			for (const session of nameFiltered) {
+				const folder = session.cwd || "(unknown folder)";
+				const list = allByFolder.get(folder);
+				if (list) list.push(session);
+				else allByFolder.set(folder, [session]);
+			}
+			const folderHits = new Map<string, FolderMatch>();
+			if (trimmed) {
+				for (const folder of allByFolder.keys()) {
+					const hit = matchFolder(folder, query);
+					if (hit) folderHits.set(folder, hit);
+				}
+			}
+
 			const groups = new Map<string, SessionInfo[]>();
+			if (folderHits.size > 0) {
+				const hits = [...folderHits].sort((a, b) =>
+					FOLDER_MATCH_TIER[a[1]] - FOLDER_MATCH_TIER[b[1]] ||
+					latestModified(allByFolder.get(b[0])!) - latestModified(allByFolder.get(a[0])!));
+				for (const [folder] of hits) groups.set(folder, orderFolderSessions(allByFolder.get(folder)!, this.sortMode));
+			}
 			for (const session of filtered) {
 				const folder = session.cwd || "(unknown folder)";
-				const list = groups.get(folder) ?? [];
-				list.push(session);
-				groups.set(folder, list);
+				if (folderHits.has(folder)) continue; // already expanded by a folder-name match
+				const list = groups.get(folder);
+				if (list) list.push(session);
+				else groups.set(folder, [session]);
 			}
 			const rows: FlatSessionNode[] = [];
 			const folders = [...groups];
@@ -418,19 +509,20 @@ class SessionList implements Component, Focusable {
 			}
 			for (const [folder, sessions] of folders) {
 				const marker = `resume-plus-folder:${folder}`;
-				const latest = sessions.reduce((value, session) => Math.max(value, session.modified.getTime()), 0);
+				const latest = latestModified(sessions);
 				const folderSession = {
 					path: marker,
 					id: marker,
 					cwd: folder,
-					name: folder.split(/[\\/]/).filter(Boolean).pop() ?? folder,
+					name: folderLabel(folder),
 					created: new Date(latest),
 					modified: new Date(latest),
 					messageCount: sessions.length,
 					firstMessage: "",
 					allMessagesText: "",
 				} as SessionInfo;
-				rows.push({ session: folderSession, depth: 0, isLast: true, ancestorContinues: [], kind: "folder", folderPath: folder });
+				rows.push({ session: folderSession, depth: 0, isLast: true, ancestorContinues: [], kind: "folder", folderPath: folder,
+					folderMatch: folderHits.get(folder) });
 				// Search reveals matches inside collapsed folders without changing saved state.
 				if (this.collapsedFolders.has(folder) && !trimmed) continue;
 				// Project the sorted GLOBAL tree. Foreign ancestors are explicit
@@ -439,7 +531,9 @@ class SessionList implements Component, Focusable {
 					const children = project(node.children);
 					return (node.session.cwd || "(unknown folder)") === folder || children.length ? [{ ...node, children }] : [];
 				});
-				const children: FlatSessionNode[] = roots ? flattenSessionTree(project(roots)) : sessions.map((session, index) => ({
+				// A folder-name match is already ordered naturally and shows every session,
+				// so it never needs the global-tree projection (which is for threaded view).
+				const children: FlatSessionNode[] = roots && !folderHits.has(folder) ? flattenSessionTree(project(roots)) : sessions.map((session, index) => ({
 					session, depth: 0, isLast: index === sessions.length - 1, ancestorContinues: [],
 				}));
 				for (const node of children) rows.push({
@@ -547,7 +641,7 @@ class SessionList implements Component, Focusable {
 
 			// Session display text (name or first message)
 			const hasName = !!session.name;
-			const displayText = isFolder ? `${this.collapsedFolders.has(node.folderPath ?? session.cwd) ? "▸" : "▾"} 📁 ${session.name ?? session.cwd}`
+			const displayText = isFolder ? `${this.collapsedFolders.has(node.folderPath ?? session.cwd) ? "▸" : "▾"} 📁 ${session.name ?? session.cwd}${node.folderMatch ? (node.folderMatch === "path" ? " · path match" : " · name match") : ""}`
 				: `${node.reference ? `↗ [${shortenPath(session.cwd)}] ` : ""}${session.name ?? session.firstMessage}`;
 			const normalizedMessage = displayText.replace(/[\x00-\x1f\x7f]/g, " ").trim();
 
