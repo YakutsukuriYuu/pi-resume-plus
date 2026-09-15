@@ -72,14 +72,19 @@ try {
     assert.ok(rows(p.getSessionList()).every(n=>n.kind!=='folder'));
     p.handleInput(keys.tab);assert.equal(p.scope,'all');assert.equal(allCalls,1);
   });
-  await test('current cwd folder pinned first; others keep global order; pin survives search',async()=>{
+  await test('current cwd folder pinned first (unfiltered) but search follows match relevance',async()=>{
     for(const [cwd,expected] of [['/C',['/C','/A','/B']],['/B',['/B','/A','/C']],['/none',['/A','/B','/C']]]) {
       const a=await make(Picker,sessions,{currentCwd:cwd});
       assert.deepEqual(rows(a.list).filter(n=>n.kind==='folder').map(n=>n.folderPath),expected);
     }
-    const a=await make(Picker,sessions,{currentCwd:'/C'});a.p.handleInput('auth');
-    assert.equal(rows(a.list)[0].folderPath,'/C');
-    assert.equal(rows(a.list).find(n=>n.kind==='folder'&&n.folderPath==='/C').session.messageCount,1);
+    // Current folder holds only a weak message-text match; the exact name match lives elsewhere.
+    const weak={...fixture('weak','/B',100),allMessagesText:'needle only appears deep in the conversation body'},
+          exact={...fixture('exact','/A',50,undefined,'needle target')};
+    const a=await make(Picker,[weak,exact],{currentCwd:'/B'});
+    assert.deepEqual(rows(a.list).filter(n=>n.kind==='folder').map(n=>n.folderPath),['/B','/A']);
+    a.p.handleInput('needle');
+    assert.deepEqual(rows(a.list).filter(n=>n.kind==='folder').map(n=>n.folderPath),['/A','/B']);
+    assert.ok(rows(a.list).findIndex(n=>n.kind!=='folder'&&n.session.path===exact.path)<=2,'exact match must stay at the top while searching');
   });
   await test('pin matches canonical cwd through symlink alias',async()=>{
     const realDir=join(temp,'realproj'),aliasDir=join(temp,'aliasproj');mkdirSync(realDir);symlinkSync(realDir,aliasDir);

@@ -407,10 +407,13 @@ class SessionList implements Component, Focusable {
 			}
 			const rows: FlatSessionNode[] = [];
 			const folders = [...groups];
-			if (this.currentFolderCanonical) {
+			if (this.currentFolderCanonical && !trimmed) {
 				const canonical = this.currentFolderCanonical;
 				const isCurrent = (folder: string) => (canonicalizePath(folder) ?? folder) === canonical;
-				// Stable sort: current cwd folder first, others keep native global order.
+				// Pin the current cwd folder first, but only for the unfiltered list.
+				// While searching, folder order must follow match relevance: the search
+				// text includes all message text, so pinning would push weak incidental
+				// matches from the current folder above a better match elsewhere.
 				folders.sort((a, b) => Number(isCurrent(b[0])) - Number(isCurrent(a[0])));
 			}
 			for (const [folder, sessions] of folders) {
