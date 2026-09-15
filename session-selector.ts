@@ -22,7 +22,7 @@ import type { PickerTheme } from "./theme.ts";
 import { canonicalizePath } from "./paths.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { createHints } from "./keybinding-hints.ts";
-import { filterAndSortSessions, hasSessionName, parseSearchQuery, type NameFilter, type SortMode } from "./session-selector-search.ts";
+import { filterAndSortSessions, hasSessionName, matchSession, parseSearchQuery, type NameFilter, type SortMode } from "./session-selector-search.ts";
 
 type SessionScope = "current" | "all";
 
@@ -247,13 +247,18 @@ function orderFolderSessions(sessions: SessionInfo[], sortMode: SortMode): Sessi
  * resume-plus enhancement: make the folder (project) name and path first-class
  * search targets, so searching a project name surfaces that project's sessions
  * instead of being drowned out by incidental matches in message text.
+ *
+ * Name matching stays fuzzy (names are short). Path matching is literal only:
+ * a fuzzy subsequence test against an absolute path matches almost everything
+ * ("ssh" matches "/Users/.../Harness/..." via User*s*, yakutu*s*ukuriyuu, *H*arness),
+ * which collapsed every folder into the same tier and fell back to recency.
  */
 function matchFolder(folder: string, query: string): FolderMatch | undefined {
 	if (!query.trim()) return undefined;
 	const parsed = parseSearchQuery(query);
 	if (parsed.error) return undefined;
 	const name = folderLabel(folder);
-	const matches = (text: string): boolean => {
+	const matchesName = (text: string): boolean => {
 		if (parsed.mode === "regex") return parsed.regex ? parsed.regex.test(text) : false;
 		if (parsed.tokens.length === 0) return false;
 		let normalized: string | null = null;
@@ -268,6 +273,15 @@ function matchFolder(folder: string, query: string): FolderMatch | undefined {
 		}
 		return true;
 	};
+	const matchesPath = (text: string): boolean => {
+		if (parsed.mode === "regex") return parsed.regex ? parsed.regex.test(text) : false;
+		if (parsed.tokens.length === 0) return false;
+		const lower = text.toLowerCase();
+		return parsed.tokens.every((token) => {
+			const needle = normalizeForMatch(token.value);
+			return needle.length > 0 && lower.includes(needle);
+		});
+	};
 	const single = parsed.mode === "tokens" && parsed.tokens.length === 1 && parsed.tokens[0]!.kind === "fuzzy"
 		? normalizeForMatch(parsed.tokens[0]!.value)
 		: undefined;
@@ -276,8 +290,8 @@ function matchFolder(folder: string, query: string): FolderMatch | undefined {
 		if (lowerName === single) return "exact";
 		if (lowerName.startsWith(single)) return "prefix";
 	}
-	if (matches(name)) return "name";
-	if (matches(folder)) return "path";
+	if (matchesName(name)) return "name";
+	if (matchesPath(folder) || matchesPath(shortenPath(folder))) return "path";
 	return undefined;
 }
 
@@ -475,17 +489,31 @@ class SessionList implements Component, Focusable {
 				else allByFolder.set(folder, [session]);
 			}
 			const folderHits = new Map<string, FolderMatch>();
-			if (trimmed) {
+			const parsedQuery = trimmed ? parseSearchQuery(query) : null;
+			if (parsedQuery && !parsedQuery.error) {
 				for (const folder of allByFolder.keys()) {
 					const hit = matchFolder(folder, query);
 					if (hit) folderHits.set(folder, hit);
 				}
 			}
+			// Best (lowest) match score per folder, used to order folders while searching.
+			const folderScores = new Map<string, number>();
+			if (parsedQuery && !parsedQuery.error) {
+				for (const session of filtered) {
+					const result = matchSession(session, parsedQuery);
+					if (!result.matches) continue;
+					const folder = session.cwd || "(unknown folder)";
+					const current = folderScores.get(folder);
+					if (current === undefined || result.score < current) folderScores.set(folder, result.score);
+				}
+			}
+			const bestScore = (folder: string): number => folderScores.get(folder) ?? Number.POSITIVE_INFINITY;
 
 			const groups = new Map<string, SessionInfo[]>();
 			if (folderHits.size > 0) {
 				const hits = [...folderHits].sort((a, b) =>
 					FOLDER_MATCH_TIER[a[1]] - FOLDER_MATCH_TIER[b[1]] ||
+					bestScore(a[0]) - bestScore(b[0]) ||
 					latestModified(allByFolder.get(b[0])!) - latestModified(allByFolder.get(a[0])!));
 				for (const [folder] of hits) groups.set(folder, orderFolderSessions(allByFolder.get(folder)!, this.sortMode));
 			}
@@ -496,8 +524,14 @@ class SessionList implements Component, Focusable {
 				if (list) list.push(session);
 				else groups.set(folder, [session]);
 			}
+			// Folder order while searching: name/path hits by tier, then every folder by
+			// the best match score of its sessions (a session whose NAME matches ranks
+			// above one matched only through message text or cwd), then most recent.
+			const ordered = [...groups.keys()].filter((folder) => folderHits.has(folder));
+			const rest = [...groups.keys()].filter((folder) => !folderHits.has(folder));
+			if (trimmed) rest.sort((a, b) => bestScore(a) - bestScore(b) || latestModified(groups.get(b)!) - latestModified(groups.get(a)!));
+			ordered.push(...rest);
 			const rows: FlatSessionNode[] = [];
-			const folders = [...groups];
 			if (this.currentFolderCanonical && !trimmed) {
 				const canonical = this.currentFolderCanonical;
 				const isCurrent = (folder: string) => (canonicalizePath(folder) ?? folder) === canonical;
@@ -505,9 +539,10 @@ class SessionList implements Component, Focusable {
 				// While searching, folder order must follow match relevance: the search
 				// text includes all message text, so pinning would push weak incidental
 				// matches from the current folder above a better match elsewhere.
-				folders.sort((a, b) => Number(isCurrent(b[0])) - Number(isCurrent(a[0])));
+				ordered.sort((a, b) => Number(isCurrent(b)) - Number(isCurrent(a)));
 			}
-			for (const [folder, sessions] of folders) {
+			for (const folder of ordered) {
+				const sessions = groups.get(folder)!;
 				const marker = `resume-plus-folder:${folder}`;
 				const latest = latestModified(sessions);
 				const folderSession = {

@@ -105,6 +105,27 @@ try {
     assert.deepEqual(r.filter(n=>n.kind!=='folder').map(n=>n.session.id).sort(),['alpha-one','alpha-two']);
     assert.ok(!r.some(n=>n.folderPath==='/beta'),'non-matching folder must not appear');
   });
+  await test('folder path matching is literal: fuzzy-only path hits are not folder matches',async()=>{
+    const sshFolder='/Users/su/Harness/ssh',geo='/Users/su/Harness/GeoSure',qwen='/Users/su/Harness/Qwen';
+    const a1=fixture('ssh-one',sshFolder,10,undefined,'SSH debian'),
+          g1=fixture('geo-one',geo,5,undefined,'SSH home:/x/GeoSure project'),
+          q1={...fixture('qwen-one',qwen,99,undefined,'unrelated title'),allMessagesText:'we discussed ssh setup briefly'};
+    const a=await make(Picker,[a1,g1,q1],{currentCwd:'/tmp'});
+    a.p.handleInput('ssh');
+    const r=rows(a.list);
+    // ssh = exact folder name; GeoSure = its session name matches SSH; Qwen = weak body match only.
+    assert.deepEqual(r.filter(n=>n.kind==='folder').map(n=>n.folderPath),[sshFolder,geo,qwen]);
+    assert.equal(r[0].folderMatch,'exact');
+    assert.ok(!r.find(n=>n.folderPath===geo).folderMatch,'GeoSure must not be a fuzzy path hit');
+    assert.ok(!r.find(n=>n.folderPath===qwen).folderMatch,'Qwen must not be a fuzzy path hit');
+  });
+  await test('multi-token path matching requires every token literally',async()=>{
+    const a=await make(Picker,[fixture('x','/Users/su/Harness/Qwen',10),fixture('y','/Users/su/Harness/ssh',20)],{currentCwd:'/tmp'});
+    a.p.handleInput('harness qwen');
+    const r=rows(a.list);
+    assert.deepEqual(r.filter(n=>n.kind==='folder').map(n=>n.folderPath),['/Users/su/Harness/Qwen']);
+    assert.equal(r[0].folderMatch,'path');
+  });
   await test('folder-name matches sort above content-only matches and keep their marker',async()=>{
     const f1=fixture('alpha-one','/alpha',10,undefined,'one'),
           f2=fixture('alpha-two','/alpha',20,undefined,'two'),
