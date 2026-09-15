@@ -8,5 +8,8 @@
       "path": "/Applications/iTerm.app"
     }
   },
-  "searchMode": "substring"
+  "searchMode": "substring",
+  "folderNewSession": {
+    "enabled": true
+  }
 }

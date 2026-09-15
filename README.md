@@ -79,7 +79,8 @@ pi remove git:github.com/YakutsukuriYuu/pi-resume-plus   # 卸载
 - **Alt+G**：在「目录分组」与「原生全局顺序」之间切换，原生视图与 `/resume` 逐行一致
 - **←/→**：折叠 / 展开选中的项目（有方向性，幂等）；**Enter** 在文件夹上只折叠，不会误恢复
 - **Shift+↑/↓**：在项目根之间跳转
-- **Shift+Enter**：在新终端打开选中会话（不影响当前会话；见下方配置）
+- **Shift+← / Shift+→**：**全部折叠 / 全部展开**所有项目文件夹（只对分组视图生效，仅影响本次打开的选择器）
+- **Shift+Enter**：会话行 = 在新终端打开该会话（不影响当前会话；见下方配置）；文件夹行 = **在该项目下新建会话并切过去**（等价于进到那个目录执行 `/new`；当前会话与编辑器草稿都不会丢，目标目录不存在时报错不切换）
 - 快捷键提示随终端宽度自动换行（24/40/80/120 列均验证）
 
 ## 配置
@@ -95,12 +96,14 @@ pi remove git:github.com/YakutsukuriYuu/pi-resume-plus   # 卸载
     "piPath": "/opt/homebrew/bin/pi",
     "terminal": { "type": "system", "path": "/Applications/iTerm.app" }
   },
-  "searchMode": "substring"
+  "searchMode": "substring",
+  "folderNewSession": { "enabled": true }
 }
 ```
 
 | 字段 | 说明 |
 |---|---|
+| `folderNewSession.enabled` | 文件夹行 `Shift+Enter` 新建会话（默认 `true`）。**独立于 `shiftEnter`**：两者只是共用同一个按键，互不影响 |
 | `searchMode` | `substring`（默认）：裸词必须**字面包含**；`"文本"` = 模糊子序列。`fuzzy`：裸词 = 模糊子序列（原生 pi 行为），`"文本"` = 精确子串。`re:` 正则两种模式都可用 |
 | `enabled` | `false` 时 Shift+Enter 完全无效（即使被重绑定为确认/删除也不会触发），提示也不显示 |
 | `mode` | `same`（`pi --session`，默认）或 `fork`（`pi --fork`） |
@@ -122,8 +125,8 @@ pi remove git:github.com/YakutsukuriYuu/pi-resume-plus   # 卸载
 ```bash
 npm install        # 仅开发依赖（typescript/@types），运行时不需要
 npm run typecheck  # 对照本机安装的 pi 类型
-npm test           # 40 项：原生逐项对照 + 目录分组/名字搜索/键位/配置/启动器/注册表
-npm run test:tui   # 真实 PTY 驱动 pi：/r 流程（Tab 分组、取消后能输入）、--rr 自动打开并恢复会话、--rr 取消后能输入
+npm test           # 48 项：原生逐项对照 + 目录分组/名字搜索/键位/配置/启动器/注册表/新建会话
+npm run test:tui   # 真实 PTY：/r 流程（Tab 分组、取消后能输入）、--rr 自动打开并恢复会话、--rr 取消后能输入、Shift+←/→ 全折叠与全展开、文件夹行 Shift+Enter 新建会话（隔离 agent 目录）
 ```
 
 ## 已知限制

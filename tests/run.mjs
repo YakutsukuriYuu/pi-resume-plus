@@ -27,7 +27,7 @@ const registry = await jiti.import(join(plugin, 'active-sessions.ts'));
 const Native = pi.SessionSelectorComponent;
 const kb = new KeybindingsManager();
 tui.setKeybindings(kb);
-const keys = { tab:'\t', down:'\x1b[B', up:'\x1b[A', left:'\x1b[D', right:'\x1b[C', enter:'\r', esc:'\x1b', sort:'\x13', named:'\x0e', rename:'\x12', del:'\x04', path:'\x10', pageDown:'\x1b[6~', pageUp:'\x1b[5~', shiftEnter:'\x1b[13;2u', shiftDown:'\x1b[1;2B', shiftUp:'\x1b[1;2A', group:'\x1bg' };
+const keys = { tab:'\t', down:'\x1b[B', up:'\x1b[A', left:'\x1b[D', right:'\x1b[C', enter:'\r', esc:'\x1b', sort:'\x13', named:'\x0e', rename:'\x12', del:'\x04', path:'\x10', pageDown:'\x1b[6~', pageUp:'\x1b[5~', shiftEnter:'\x1b[13;2u', shiftDown:'\x1b[1;2B', shiftUp:'\x1b[1;2A', shiftLeft:'\x1b[1;2D', shiftRight:'\x1b[1;2C', group:'\x1bg' };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 let passed = 0;
 async function test(name, fn) { await fn(); passed++; console.log(`PASS ${name}`); }
@@ -195,6 +195,62 @@ try {
     assert.equal(config.parseConfig({searchMode:'fuzzy'}).searchMode,'fuzzy');
     assert.equal(config.parseConfig({searchMode:'substring'}).searchMode,'substring');
     assert.throws(()=>config.parseConfig({searchMode:'nope'}));
+  });
+  await test('folder-row Shift+Enter creates a session in that folder (config-gated)',async()=>{
+    const opened=[],created=[];
+    const a=await make(Picker,sessions,{onOpenInNew:path=>opened.push(path),newSessionInFolder:folder=>created.push(folder)});
+    const firstFolder=rows(a.list).find(n=>n.kind==='folder').folderPath;
+    a.p.handleInput(keys.shiftEnter);
+    assert.deepEqual(created,[firstFolder]);assert.deepEqual(opened,[],'folder row must not open a terminal');
+    a.p.handleInput(keys.down);                       // folder row -> session row
+    a.p.handleInput(keys.shiftEnter);
+    assert.equal(opened.length,1,'session row still opens a terminal');
+    assert.equal(created.length,1);
+    // Disabled (no callback wired): the folder row is inert, session rows unaffected.
+    const opened2=[];
+    const b=await make(Picker,sessions,{onOpenInNew:path=>opened2.push(path)});
+    b.p.handleInput(keys.shiftEnter);
+    assert.deepEqual(opened2,[],'disabled: folder row does nothing');
+    b.p.handleInput(keys.down);b.p.handleInput(keys.shiftEnter);
+    assert.equal(opened2.length,1,'disabled must not affect session rows');
+  });
+  await test('Shift+Left collapses every folder, Shift+Right expands them all',async()=>{
+    const a=await make();
+    const expanded=rows(a.list).filter(n=>n.kind!=='folder').length;
+    assert.ok(expanded>0);
+    a.p.handleInput(keys.shiftLeft);
+    assert.equal(rows(a.list).filter(n=>n.kind!=='folder').length,0);
+    assert.equal(rows(a.list).filter(n=>n.kind==='folder').length,3);
+    a.p.handleInput(keys.shiftRight);
+    assert.equal(rows(a.list).filter(n=>n.kind!=='folder').length,expanded);
+    // The collapse-all state survives a search and a cleared query.
+    a.p.handleInput(keys.shiftLeft);
+    a.p.handleInput('auth');
+    assert.ok(rows(a.list).filter(n=>n.kind!=='folder').length>0,'search still reveals matches');
+    a.p.handleInput('\x15');
+    assert.equal(rows(a.list).filter(n=>n.kind!=='folder').length,0,'folders stay collapsed after clearing');
+  });
+  await test('new session in a folder: the header must be written or the switch lands in the wrong cwd',async()=>{
+    const proj=join(temp,'proj-new');mkdirSync(proj);
+    const manager=pi.SessionManager.create(proj,join(temp,'custom-sessions'));
+    const file=manager.getSessionFile();
+    assert.ok(file,'a file path is chosen immediately');
+    assert.ok(!existsSync(file),'pi writes a new session file lazily (first assistant message)');
+    assert.equal(pi.SessionManager.open(file).getCwd(),process.cwd(),'an unflushed path loses the target cwd');
+    // What the extension does: persist the generated header, then switch.
+    const header=manager.getHeader();
+    assert.ok(header&&header.cwd===proj,'create() encodes the target cwd in the header');
+    writeFileSync(file,`${JSON.stringify(header)}\n`,{flag:'wx'});
+    const reopened=pi.SessionManager.open(file);
+    assert.equal(reopened.getCwd(),proj,'the header makes open() target the right project');
+    reopened.appendThinkingLevelChange('off');
+    assert.ok(readFileSync(file,'utf8').includes('thinking_level_change'),'later entries append cleanly');
+  });
+  await test('config: folderNewSession defaults to enabled and validates',()=>{
+    assert.equal(config.parseConfig({}).folderNewSession.enabled,true);
+    assert.equal(config.parseConfig({folderNewSession:{enabled:false}}).folderNewSession.enabled,false);
+    assert.throws(()=>config.parseConfig({folderNewSession:{enabled:'no'}}));
+    assert.throws(()=>config.parseConfig({folderNewSession:[]}));
   });
   await test('All folder order uses GLOBAL descendant activity (root mtime is old)',async()=>{
     const a=await make();

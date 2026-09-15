@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync, writeFileSync } from "node:fs";
 import { SessionManager, type ExtensionAPI, type ExtensionCommandContext, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import { SessionSelectorComponent } from "./session-selector.ts";
 import { readConfig } from "./config.ts";
@@ -6,7 +6,11 @@ import { launchInTerminal } from "./terminal-launcher.ts";
 import { canonicalizePath, defaultSessionDir } from "./paths.ts";
 import { registerActiveSession, unregisterActiveSession, isSessionActive } from "./active-sessions.ts";
 
-type Selection = { action: "resume" | "terminal"; path: string } | { action: "exit" } | null;
+type Selection =
+  | { action: "resume" | "terminal"; path: string }
+  | { action: "new-in-folder"; folder: string }
+  | { action: "exit" }
+  | null;
 
 /** CLI flags that open the picker on startup, e.g. `pi --rr` (single-dash `-rr` is rejected by pi's parser). */
 const STARTUP_FLAGS = ["rr", "resume-plus"] as const;
@@ -56,6 +60,7 @@ export default function (pi: ExtensionAPI) {
     catch (error) { ctx.ui.notify(String(error), "error"); return; }
     const shiftEnter = config.shiftEnter;
     const searchMode = config.searchMode;
+    const folderNewSession = config.folderNewSession;
     const cwd = ctx.sessionManager.getCwd();
     const sessionDir = ctx.sessionManager.getSessionDir();
     const currentFile = ctx.sessionManager.getSessionFile();
@@ -106,6 +111,7 @@ export default function (pi: ExtensionAPI) {
                 showRenameHint: true,
                 currentCwd: cwd,
                 searchMode,
+                newSessionInFolder: folderNewSession.enabled ? (folder: string) => done({ action: "new-in-folder", folder }) : undefined,
                 onOpenInNew: shiftEnter.enabled ? (path) => done({ action: "terminal", path }) : undefined,
               },
               currentFile,
@@ -150,6 +156,33 @@ export default function (pi: ExtensionAPI) {
     })();
     if (!selected) { restoreEditorFocus(); return; }
     if (selected.action === "exit") { ctx.shutdown(); return; }
+    if (selected.action === "new-in-folder") {
+      const folder = selected.folder;
+      if (!existsSync(folder) || !statSync(folder).isDirectory()) {
+        ctx.ui.notify(`目录不存在，无法新建会话：${folder}`, "error");
+        restoreEditorFocus();
+        return;
+      }
+      try {
+        // Same session directory as the current session (so a configured custom
+        // sessionDir is respected); an empty string means "default for that cwd".
+        const sessionDir = ctx.sessionManager.getSessionDir();
+        const created = SessionManager.create(folder, sessionDir || undefined);
+        const file = created.getSessionFile();
+        const header = created.getHeader();
+        if (!file || !header) throw new Error("无法创建会话文件");
+        // pi defers writing a new session file until the first assistant message,
+        // and switching reads the target cwd from the file header. Without a file,
+        // open() would fall back to process.cwd() (the current directory). Persist
+        // the generated header, which makes it a valid session file for that cwd.
+        writeFileSync(file, `${JSON.stringify(header)}\n`, { flag: "wx" });
+        await ctx.switchSession(file);
+      } catch (error) {
+        ctx.ui.notify(`无法在 ${folder} 新建会话：${error instanceof Error ? error.message : String(error)}`, "error");
+        restoreEditorFocus();
+      }
+      return; // The replaced context is stale after a successful switch.
+    }
     if (selected.action === "resume") {
       // This is the native handleResumeSession path: trust, missing cwd prompt,
       // extension veto, replacement lifecycle and error handling stay with pi.

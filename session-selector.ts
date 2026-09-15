@@ -189,9 +189,9 @@ class SessionSelectorHeader implements Component {
 				keyHint("tui.select.confirm", "resume / toggle folder"), keyHint("tui.select.cancel", "cancel"));
 			if (this.scope === "all") {
 				hint2Parts.push(rawKeyHint("alt+g", this.grouped ? "folders → native" : "native → folders"));
-				if (this.grouped) hint2Parts.push(rawKeyHint("left/right", "collapse/expand"), rawKeyHint("shift+up/shift+down", "project"));
+				if (this.grouped) hint2Parts.push(rawKeyHint("left/right", "collapse/expand"), rawKeyHint("shift+left/right", "all folders"), rawKeyHint("shift+up/shift+down", "project"));
 			}
-			if (this.showOpenInNewHint) hint2Parts.push(rawKeyHint("shift+enter", "new terminal"));
+			if (this.showOpenInNewHint) hint2Parts.push(rawKeyHint("shift+enter", this.grouped ? "new terminal / folder: new session" : "new terminal"));
 			return [`${left}${" ".repeat(spacing)}${rightText}`,
 				...wrapTextWithAnsi(hint1 + sep + hint2Parts.join(sep), Math.max(1, width))];
 		}
@@ -399,6 +399,8 @@ class SessionList implements Component, Focusable {
 	private currentFolderCanonical?: string;
 	public onSelect?: (sessionPath: string) => void;
 	public onOpenInNew?: (sessionPath: string) => void;
+	/** Folder-row Shift+Enter: create a new session in that folder (resume-plus). */
+	public onNewSessionInFolder?: (folderPath: string) => void;
 	public onCancel?: () => void;
 	public onExit: () => void = () => {};
 	public onToggleScope?: () => void;
@@ -757,7 +759,11 @@ class SessionList implements Component, Focusable {
 		// Reserve before *all* actions, including delete confirmation and remapped confirm.
 		if (matchesKey(keyData, "shift+enter")) {
 			const selected = this.filteredSessions[this.selectedIndex];
-			if (this.confirmingDeletePath === null && selected && selected.kind !== "folder") this.onOpenInNew?.(selected.session.path);
+			if (this.confirmingDeletePath === null && selected) {
+				// Folder rows create a new session in that project; session rows open a terminal.
+				if (selected.kind === "folder") this.onNewSessionInFolder?.(selected.folderPath!);
+				else this.onOpenInNew?.(selected.session.path);
+			}
 			return;
 		}
 
@@ -834,6 +840,17 @@ class SessionList implements Component, Focusable {
 			this.grouped = !this.grouped;
 			this.filterSessions(this.searchInput.getValue());
 			this.onToggleGrouping?.(this.grouped);
+		}
+		else if (this.showCwd && this.grouped && matchesKey(keyData, "shift+right")) {
+			// Expand every folder at once.
+			this.collapsedFolders.clear();
+			this.filterSessions(this.searchInput.getValue());
+		}
+		else if (this.showCwd && this.grouped && matchesKey(keyData, "shift+left")) {
+			// Collapse every folder at once (over all known sessions, so the state
+			// survives scope switches and cleared searches).
+			for (const session of this.allSessions) this.collapsedFolders.add(session.cwd || "(unknown folder)");
+			this.filterSessions(this.searchInput.getValue());
 		}
 		else if (this.showCwd && this.grouped && matchesKey(keyData, "shift+up")) {
 			this.jumpFolder("up");
@@ -1019,6 +1036,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			currentCwd?: string;
 			/** Bare-word matcher: "substring" (default) or "fuzzy". */
 			searchMode?: SearchMode;
+			/** Set to enable folder-row Shift+Enter (new session in that folder). */
+			newSessionInFolder?: (folderPath: string) => void;
 		},
 		currentSessionFilePath?: string,
 	) {
@@ -1063,6 +1082,10 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		if (options.onOpenInNew) this.sessionList.onOpenInNew = (sessionPath) => {
 			clearStatusMessage();
 			options.onOpenInNew?.(sessionPath);
+		};
+		if (options.newSessionInFolder) this.sessionList.onNewSessionInFolder = (folderPath) => {
+			clearStatusMessage();
+			options.newSessionInFolder?.(folderPath);
 		};
 		this.sessionList.onToggleGrouping = (grouped) => this.header.setGrouped(grouped);
 		this.sessionList.onCancel = () => {

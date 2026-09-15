@@ -8,6 +8,8 @@ Usage:
   python3 tests/tui.py --startup-cancel       # closing the auto-opened picker (Esc / Ctrl+C) restores typing
 """
 import os, pty, select, subprocess, sys, time, re, signal, fcntl, termios, struct
+import json, shutil, tempfile, uuid
+from datetime import datetime, timezone
 
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-B]|\x1b[>=][0-9]?u?")
 
@@ -18,11 +20,11 @@ def strip_ansi(data: bytes) -> str:
 class Session:
     """A pi TUI running in a PTY, with helpers to drive and inspect it."""
 
-    def __init__(self, args, cwd="/tmp"):
+    def __init__(self, args, cwd="/tmp", env=None):
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
         self.proc = subprocess.Popen(["pi", *args], stdin=slave, stdout=slave, stderr=slave,
-                                     cwd=cwd, close_fds=True, start_new_session=True)
+                                     cwd=cwd, env=env, close_fds=True, start_new_session=True)
         os.close(slave)
         self.log = bytearray()
 
@@ -41,6 +43,14 @@ class Session:
     def text(self, tail=None):
         data = bytes(self.log) if tail is None else bytes(self.log[-tail:])
         return strip_ansi(data)
+
+    def mark(self):
+        """Byte offset to measure output produced from now on."""
+        return len(self.log)
+
+    def since(self, mark):
+        """Only the output produced after `mark` (avoids stale frames in checks)."""
+        return strip_ansi(bytes(self.log[mark:]))
 
     def wait_for(self, probe, seconds):
         """Pump until `probe` shows up anywhere in the captured output."""
@@ -81,8 +91,9 @@ def mode_startup_flag(cwd):
         opened = s.wait_for("Resume Session (All)", 30) and s.wait_for("📁", 30)
         ok = check("--rr opens the picker with no input", opened)
         s.send(b"\x1b[B", 1)      # folder row -> first session row
+        mark = s.mark()
         s.send(b"\r", 1)
-        resumed = s.wait_until(lambda t: "Resumed session" in t[-4000:], 15)
+        resumed = s.wait_until(lambda _t: "Resumed session" in s.since(mark), 15)
         ok &= check("selecting in the auto-opened picker resumes that session", resumed)
         return ok
     finally:
@@ -100,16 +111,100 @@ def mode_startup_cancel(cwd):
                 ok &= check(f"{label}: picker opened", False)
                 continue
             s.send(key, 2)
-            closed = s.wait_until(lambda t: "Resume Session" not in t[-4000:], 8)
+            mark = s.mark()
+            closed = s.wait_until(lambda _t: "Resume Session" not in s.since(mark), 8)
             ok &= check(f"{label} closes the startup picker", closed)
+            mark = s.mark()
             s.send(b"hello", 1)
-            typed = s.wait_until(lambda t: "hello" in t[-4000:], 6)
+            typed = s.wait_until(lambda _t: "hello" in s.since(mark), 6)
             ok &= check(f"{label}: typing works right after closing", typed)
             s.send(b"\x03", 1)
             s.send(b"\x03", 1)
         finally:
             s.close()
     return ok
+
+
+def mode_expand_collapse(cwd):
+    """Shift+Left collapses every folder, Shift+Right expands them all."""
+    s = Session(["--no-session"], cwd)
+    try:
+        s.pump(6)
+        s.send(b"/r")
+        s.send(b"\r", 3)
+        if not s.wait_for("📁", 30):
+            return check("picker with folders opened", False)
+        mark = s.mark()
+        s.send(b"\x1b[1;2D", 2)     # shift+left
+        ok = check("Shift+Left collapses every folder",
+                   s.wait_until(lambda _t: "▸ 📁" in s.since(mark) and "▾ 📁" not in s.since(mark), 8))
+        mark = s.mark()
+        s.send(b"\x1b[1;2C", 2)     # shift+right
+        ok &= check("Shift+Right expands them all again",
+                    s.wait_until(lambda _t: "▾ 📁" in s.since(mark), 8))
+        s.send(b"\x1b", 1.5)
+        return ok
+    finally:
+        s.close()
+
+
+def mode_new_in_folder():
+    """Folder-row Shift+Enter creates a new session for that folder (isolated agent dir)."""
+    base = tempfile.mkdtemp(prefix="rp-newfolder-")
+    agent = os.path.join(base, "agent")
+    proj = os.path.realpath(os.path.join(base, "proj"))
+    plugin = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ext = os.path.join(agent, "extensions", "resume-plus")
+    os.makedirs(ext); os.makedirs(proj)
+    for name in os.listdir(plugin):
+        if name.endswith(".ts"):
+            shutil.copy(os.path.join(plugin, name), os.path.join(ext, name))
+    # Seed one session for the project so the picker has a folder row to act on.
+    sid = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    ts = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+    sessions_dir = os.path.join(agent, "sessions", "--" + proj.lstrip("/").replace("/", "-") + "--")
+    os.makedirs(sessions_dir)
+    seed = os.path.join(sessions_dir, f"seed_{sid}.jsonl")
+    with open(seed, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "session", "version": 3, "id": sid, "timestamp": ts, "cwd": proj}) + "\n")
+        fh.write(json.dumps({"type": "message", "id": "aaaa1111", "parentId": None, "timestamp": ts,
+                             "message": {"role": "user", "content": "seed prompt"}}) + "\n")
+    env = {**os.environ, "PI_CODING_AGENT_DIR": agent}
+    s = Session([], cwd=proj, env=env)
+
+    def session_files():
+        found = []
+        for root, _dirs, files in os.walk(os.path.join(agent, "sessions")):
+            found += [os.path.join(root, f) for f in files if f.endswith(".jsonl")]
+        return found
+
+    try:
+        s.pump(8)
+        s.send(b"/r")
+        s.send(b"\r", 3)
+        if not s.wait_for("📁", 30):
+            return check("folder row visible", False)
+        before = len(session_files())
+        mark = s.mark()
+        s.send(b"\x1b[13;2u", 2)     # shift+enter on the folder row
+        ok = check("Shift+Enter on a folder row closes the picker",
+                   s.wait_until(lambda _t: "Resume Session" not in s.since(mark), 12))
+        mark = s.mark()
+        s.send(b"hello", 1)
+        ok &= check("typing works after the switch", s.wait_until(lambda _t: "hello" in s.since(mark), 8))
+        files = session_files()
+        created = [p for p in files if p != seed]
+        ok &= check("a new session file was created", len(files) > before, f"({before} -> {len(files)})")
+        ok &= check("the new session targets that folder",
+                    any(proj in open(p, encoding="utf-8").readline() for p in created))
+        ok &= check("pi keeps appending to it (header was valid)",
+                    any("level_change" in open(p, encoding="utf-8").read() for p in created))
+        ok &= check("no error notification", "无法在" not in s.text())
+        return ok
+    finally:
+        s.close()
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def mode_normal(cwd, pin):
@@ -125,9 +220,11 @@ def mode_normal(cwd, pin):
         snap3 = bytes(s.log)
         s.send(b"\x1b[1;2B", 1)    # Shift+Down jump between projects
         s.send(b"\x1b", 1.5)       # cancel selector
-        typable = s.wait_until(lambda t: "Resume Session" not in t[-4000:], 5)
+        mark = s.mark()
+        typable = s.wait_until(lambda _t: "Resume Session" not in s.since(mark), 5)
+        mark = s.mark()
         s.send(b"hello", 1)
-        typable &= s.wait_until(lambda t: "hello" in t[-4000:], 6)
+        typable &= s.wait_until(lambda _t: "hello" in s.since(mark), 6)
     finally:
         s.close()
     ok = check("startup loads resume-plus", "resume-plus" in strip_ansi(bytes(s.log)))
@@ -149,6 +246,10 @@ def main():
         return mode_startup_flag("/tmp")
     if "--startup-cancel" in args:
         return mode_startup_cancel("/tmp")
+    if "--expand-collapse" in args:
+        return mode_expand_collapse("/tmp")
+    if "--new-in-folder" in args:
+        return mode_new_in_folder()
     cwd = args[0] if args and not args[0].startswith("--") else "/tmp"
     pin = next((a for a in args[1:] if not a.startswith("--")), None)
     return mode_normal(cwd, pin)

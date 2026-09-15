@@ -18,7 +18,9 @@ export type ShiftEnterConfig = {
   piPath: string;
   terminal: TerminalConfig;
 };
-export type ResumePlusConfig = { shiftEnter: ShiftEnterConfig; /** Bare-word matcher: "substring" (default) or "fuzzy" (native pi). */ searchMode: SearchMode };
+/** Folder-row Shift+Enter creates a new session in that folder. Independent of shiftEnter. */
+export type FolderNewSessionConfig = { enabled: boolean };
+export type ResumePlusConfig = { shiftEnter: ShiftEnterConfig; /** Bare-word matcher: "substring" (default) or "fuzzy" (native pi). */ searchMode: SearchMode; folderNewSession: FolderNewSessionConfig };
 export const configPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "config.json");
 const terminals = ["system", "Terminal.app", "iTerm2", "WezTerm", "Kitty", "Ghostty", "Alacritty", "x-terminal-emulator", "gnome-terminal", "konsole", "xterm", "custom"];
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -37,12 +39,15 @@ export function parseConfig(value: unknown): ResumePlusConfig {
   if (terminal.type !== undefined && !terminals.includes(String(terminal.type))) throw new Error("不支持的 terminal.type");
   if (terminal.args !== undefined && (!Array.isArray(terminal.args) || terminal.args.some((arg) => typeof arg !== "string" || arg.includes("\0")))) throw new Error("terminal.args 必须为字符串数组");
   if (root.searchMode !== undefined && root.searchMode !== "substring" && root.searchMode !== "fuzzy") throw new Error('searchMode 必须为 "substring" 或 "fuzzy"');
+  const folderNewSession = root.folderNewSession === undefined ? {} : object(root.folderNewSession, "folderNewSession");
+  if (folderNewSession.enabled !== undefined && typeof folderNewSession.enabled !== "boolean") throw new Error("folderNewSession.enabled 必须为 boolean");
   return { shiftEnter: {
     enabled: shift.enabled === undefined ? true : shift.enabled as boolean,
     mode: shift.mode === "fork" ? "fork" : "same",
     piPath: shift.piPath as string ?? "pi",
     terminal: { type: "system", ...terminal } as TerminalConfig,
-  }, searchMode: root.searchMode === "fuzzy" ? "fuzzy" : "substring" };
+  }, searchMode: root.searchMode === "fuzzy" ? "fuzzy" : "substring",
+    folderNewSession: { enabled: folderNewSession.enabled === undefined ? true : folderNewSession.enabled as boolean } };
 }
 export function readConfig(file = configPath): ResumePlusConfig {
   try { return parseConfig(JSON.parse(readFileSync(file, "utf8"))); }

@@ -37,3 +37,11 @@ Deviations required by the public extension API (pi does not expose these intern
    configured mode, defaulting to `"substring"` (bare word = literal substring, `"quoted"` =
    fuzzy). This exists because fuzzy subsequence matching over long search text is very
    noisy: `ssh` matches `/Users/<user>/…/Harness/…` via User*s* + yakutu*s*ukuriyuu + *H*arness.
+8. **Extra picker keys** (resume-plus additions, gated where noted):
+   - folder row `Shift+Enter` creates a new session in that folder (`folderNewSession.enabled`,
+     default on) — the command handler writes the generated session header and then calls the
+     public `ctx.switchSession()`. Upstream's own Shift+Enter only opens a terminal and is
+     governed by `shiftEnter.enabled`; the two settings are intentionally independent.
+   - `Shift+Left` / `Shift+Right` collapse / expand every folder in the grouped view.
+   - grouping, folder search, current-folder pinning and `Alt+G` are likewise extensions; the
+     native (ungrouped) view never uses them.
