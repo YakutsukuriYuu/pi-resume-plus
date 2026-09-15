@@ -164,10 +164,16 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       try {
-        // Same session directory as the current session (so a configured custom
-        // sessionDir is respected); an empty string means "default for that cwd".
-        const sessionDir = ctx.sessionManager.getSessionDir();
-        const created = SessionManager.create(folder, sessionDir || undefined);
+        // Create the file in the directory pi would use for a new session in that
+        // folder: the per-project default, or the configured custom sessionDir if
+        // this process uses one. Using the *current* session's directory would store
+        // e.g. a pi-hub session inside the Qwen directory, and since pi then reports
+        // sessionDir != default(dir,cwd), the picker's All scope would degrade to
+        // that single directory.
+        const currentDir = ctx.sessionManager.getSessionDir();
+        const usesDefaultDirs = !currentDir || currentDir === defaultSessionDir(ctx.sessionManager.getCwd());
+        const targetDir = usesDefaultDirs ? defaultSessionDir(folder) : currentDir;
+        const created = SessionManager.create(folder, targetDir || undefined);
         const file = created.getSessionFile();
         const header = created.getHeader();
         if (!file || !header) throw new Error("无法创建会话文件");

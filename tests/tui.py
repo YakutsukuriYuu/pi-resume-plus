@@ -149,57 +149,79 @@ def mode_expand_collapse(cwd):
 
 
 def mode_new_in_folder():
-    """Folder-row Shift+Enter creates a new session for that folder (isolated agent dir)."""
+    """Folder-row Shift+Enter creates a new session for that folder (isolated agent dir).
+
+    Reproduces the reported scenario: while inside project A, act on project B's
+    folder row, then reopen /r and check the All scope still lists every project.
+    """
     base = tempfile.mkdtemp(prefix="rp-newfolder-")
     agent = os.path.join(base, "agent")
     proj = os.path.realpath(os.path.join(base, "proj"))
+    other = os.path.realpath(os.path.join(base, "otherproj"))
     plugin = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     ext = os.path.join(agent, "extensions", "resume-plus")
-    os.makedirs(ext); os.makedirs(proj)
+    os.makedirs(ext); os.makedirs(proj); os.makedirs(other)
     for name in os.listdir(plugin):
         if name.endswith(".ts"):
             shutil.copy(os.path.join(plugin, name), os.path.join(ext, name))
-    # Seed one session for the project so the picker has a folder row to act on.
-    sid = str(uuid.uuid4())
-    now = datetime.now(timezone.utc)
-    ts = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
-    sessions_dir = os.path.join(agent, "sessions", "--" + proj.lstrip("/").replace("/", "-") + "--")
-    os.makedirs(sessions_dir)
-    seed = os.path.join(sessions_dir, f"seed_{sid}.jsonl")
-    with open(seed, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps({"type": "session", "version": 3, "id": sid, "timestamp": ts, "cwd": proj}) + "\n")
-        fh.write(json.dumps({"type": "message", "id": "aaaa1111", "parentId": None, "timestamp": ts,
-                             "message": {"role": "user", "content": "seed prompt"}}) + "\n")
+
+    def encoded(path):
+        return "--" + path.lstrip("/").replace("/", "-") + "--"
+
+    def seed_session(path):
+        sid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        ts = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+        directory = os.path.join(agent, "sessions", encoded(path))
+        os.makedirs(directory, exist_ok=True)
+        seed = os.path.join(directory, f"seed_{sid}.jsonl")
+        with open(seed, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "session", "version": 3, "id": sid, "timestamp": ts, "cwd": path}) + "\n")
+            fh.write(json.dumps({"type": "message", "id": "aaaa1111", "parentId": None, "timestamp": ts,
+                                 "message": {"role": "user", "content": "seed prompt"}}) + "\n")
+        return seed
+
+    seeds = {seed_session(proj), seed_session(other)}
+    other_dir = os.path.join(agent, "sessions", encoded(other))
+    proj_dir = os.path.join(agent, "sessions", encoded(proj))
     env = {**os.environ, "PI_CODING_AGENT_DIR": agent}
     s = Session([], cwd=proj, env=env)
 
-    def session_files():
-        found = []
-        for root, _dirs, files in os.walk(os.path.join(agent, "sessions")):
-            found += [os.path.join(root, f) for f in files if f.endswith(".jsonl")]
-        return found
+    def session_files(directory):
+        return [] if not os.path.isdir(directory) else [f for f in os.listdir(directory) if f.endswith(".jsonl")]
 
     try:
         s.pump(8)
         s.send(b"/r")
         s.send(b"\r", 3)
-        if not s.wait_for("📁", 30):
-            return check("folder row visible", False)
-        before = len(session_files())
+        if not (s.wait_for("proj", 30) and s.wait_for("otherproj", 30)):
+            return check("both project folders visible", False)
+        s.send(b"\x1b[B", 0.6)       # current-folder row -> its session
+        s.send(b"\x1b[B", 0.6)       # -> the OTHER project's folder row
+        before = len(session_files(other_dir))
         mark = s.mark()
-        s.send(b"\x1b[13;2u", 2)     # shift+enter on the folder row
-        ok = check("Shift+Enter on a folder row closes the picker",
+        s.send(b"\x1b[13;2u", 2)     # shift+enter on that folder row
+        ok = check("Shift+Enter on another project's folder closes the picker",
                    s.wait_until(lambda _t: "Resume Session" not in s.since(mark), 12))
         mark = s.mark()
         s.send(b"hello", 1)
         ok &= check("typing works after the switch", s.wait_until(lambda _t: "hello" in s.since(mark), 8))
-        files = session_files()
-        created = [p for p in files if p != seed]
-        ok &= check("a new session file was created", len(files) > before, f"({before} -> {len(files)})")
-        ok &= check("the new session targets that folder",
-                    any(proj in open(p, encoding="utf-8").readline() for p in created))
+        created = [f for f in session_files(other_dir) if f not in {os.path.basename(p) for p in seeds}]
+        ok &= check("the new session was created in the other project's dir",
+                    len(session_files(other_dir)) == before + 1 and len(created) == 1,
+                    f"(before={before}, now={session_files(other_dir)})")
+        ok &= check("nothing was written into the current project's dir",
+                    len(session_files(proj_dir)) == 1)
+        ok &= check("its header targets that folder",
+                    any(other in open(os.path.join(other_dir, f), encoding="utf-8").readline() for f in created))
         ok &= check("pi keeps appending to it (header was valid)",
-                    any("level_change" in open(p, encoding="utf-8").read() for p in created))
+                    any("level_change" in open(os.path.join(other_dir, f), encoding="utf-8").read() for f in created))
+        # The reported symptom: after such a switch the All scope showed a single directory.
+        mark = s.mark()
+        s.send(b"/r")
+        s.send(b"\r", 4)
+        ok &= check("/r All still lists every project after the switch",
+                    s.wait_until(lambda _t: "proj" in s.since(mark) and "otherproj" in s.since(mark), 20))
         ok &= check("no error notification", "无法在" not in s.text())
         return ok
     finally:

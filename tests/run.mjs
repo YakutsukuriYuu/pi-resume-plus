@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { piDir, plugin, requirePi, tuiPath } from './setup.mjs';
@@ -245,6 +245,28 @@ try {
     assert.equal(reopened.getCwd(),proj,'the header makes open() target the right project');
     reopened.appendThinkingLevelChange('off');
     assert.ok(readFileSync(file,'utf8').includes('thinking_level_change'),'later entries append cleanly');
+  });
+  await test('new session lands in the target folder\'s own session dir (All scope stays global)',async()=>{
+    const proj=join(temp,'proj-dir'),elsewhere=join(temp,'elsewhere-dir');
+    mkdirSync(proj);mkdirSync(elsewhere);
+    const projDir=paths.defaultSessionDir(proj),otherDir=paths.defaultSessionDir(elsewhere);
+    assert.notEqual(projDir,otherDir);
+    // What the extension does: use the target cwd's default dir, not another project's.
+    const manager=pi.SessionManager.create(proj,projDir);
+    const file=manager.getSessionFile();
+    assert.ok(file.startsWith(projDir+sep),'file must live in the target project dir');
+    writeFileSync(file,`${JSON.stringify(manager.getHeader())}\n`,{flag:'wx'});
+    const reopened=pi.SessionManager.open(file);
+    assert.equal(reopened.getCwd(),proj);
+    // This equality is what keeps the picker's All scope listing every project.
+    // Storing the file under a different project's dir makes it false, and pi's All
+    // scope then lists only that one directory (the reported bug).
+    assert.equal(reopened.getSessionDir(),paths.defaultSessionDir(reopened.getCwd()));
+    const misplaced=pi.SessionManager.create(proj,otherDir);
+    const misplacedFile=misplaced.getSessionFile();
+    writeFileSync(misplacedFile,`${JSON.stringify(misplaced.getHeader())}\n`,{flag:'wx'});
+    const wrong=pi.SessionManager.open(misplacedFile);
+    assert.notEqual(wrong.getSessionDir(),paths.defaultSessionDir(wrong.getCwd()),'documents the degraded-All condition');
   });
   await test('config: folderNewSession defaults to enabled and validates',()=>{
     assert.equal(config.parseConfig({}).folderNewSession.enabled,true);
